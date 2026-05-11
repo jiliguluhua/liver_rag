@@ -1,0 +1,17 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+.env
+.env.*
+.vscode/
+dist/
+build/
+*.log
+
+models/nnunet/
+models/swin_unetr_btcv_segmentation/models/
+data/nnunet_io/raw/
+*.pt
+*.model
+*.nii.gz

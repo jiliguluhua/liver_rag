@@ -80,6 +80,7 @@ class AgentState(TypedDict, total=False):
     errors: Annotated[list[str], operator.add]
     metrics: dict[str, float]
     debug: dict[str, Any]
+    preview_image: Any
 
 
 def create_initial_state(
@@ -120,4 +121,3 @@ def create_initial_state(
         "metrics": {},
         "debug": {},
     }
-

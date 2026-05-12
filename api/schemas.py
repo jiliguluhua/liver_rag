@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -50,3 +50,27 @@ class HealthResponse(BaseModel):
     status: str
     agent_ready: bool
     default_image_path_configured: bool
+
+
+JobStatus = Literal["queued", "running", "completed", "failed"]
+
+
+class JobSubmitResponse(BaseModel):
+    job_id: str
+    session_id: str
+    status: JobStatus
+
+
+class JobStatusResponse(BaseModel):
+    job_id: str
+    session_id: str
+    status: JobStatus
+    query: str
+    image_path: Optional[str] = None
+    reviewer_enabled: bool
+    consultation_id: Optional[int] = None
+    error_message: Optional[str] = None
+    created_at: datetime
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    result: Optional[ConsultResponse] = None

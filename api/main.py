@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import hashlib
 import io
 import shutil
@@ -16,10 +17,18 @@ from fastapi.responses import HTMLResponse
 from PIL import Image
 from sqlalchemy.orm import Session
 
-from api.schemas import ConsultRequest, ConsultResponse, ConsultationSummary, HealthResponse
+from api.schemas import (
+    ConsultRequest,
+    ConsultResponse,
+    ConsultationSummary,
+    HealthResponse,
+    JobStatusResponse,
+    JobSubmitResponse,
+)
 from core import config
-from core.database import get_db, init_db
-from core.models import ConsultationRecord
+from core.database import SessionLocal, get_db, init_db
+from core.models import ConsultationJobRecord, ConsultationRecord
+from services.job_queue import InMemoryJobQueue
 from services.medical_agent import LiverSmartAgent
 
 
@@ -97,6 +106,20 @@ def _save_consultation(
     return row
 
 
+def _json_loads_list(raw: Optional[str]) -> list:
+    if not raw:
+        return []
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+    return data if isinstance(data, list) else []
+
+
+def _json_dumps(data: list | dict) -> str:
+    return json.dumps(data, ensure_ascii=False)
+
+
 def _build_consult_response(
     *,
     row: ConsultationRecord,
@@ -120,12 +143,124 @@ def _build_consult_response(
     )
 
 
+def _build_job_status_response(row: ConsultationJobRecord) -> JobStatusResponse:
+    result: Optional[ConsultResponse] = None
+    if row.status == "completed" and row.report is not None:
+        result = ConsultResponse(
+            report=row.report,
+            preview_image_base64=row.preview_image_base64,
+            consultation_id=row.consultation_id or 0,
+            session_id=row.session_id,
+            status=row.status,
+            intent=row.intent,
+            perception_status=row.perception_status,
+            warnings=_json_loads_list(row.warnings_json),
+            errors=_json_loads_list(row.errors_json),
+            evidence=_json_loads_list(row.evidence_json),
+            trace=_json_loads_list(row.trace_json),
+        )
+    return JobStatusResponse(
+        job_id=row.id,
+        session_id=row.session_id,
+        status=row.status,
+        query=row.query,
+        image_path=row.image_path,
+        reviewer_enabled=row.reviewer_enabled,
+        consultation_id=row.consultation_id,
+        error_message=row.error_message,
+        created_at=row.created_at,
+        started_at=row.started_at,
+        completed_at=row.completed_at,
+        result=result,
+    )
+
+
+def _run_consultation(
+    *,
+    agent: LiverSmartAgent,
+    db: Session,
+    session_id: str,
+    query: str,
+    image_path: Optional[str],
+    reviewer_enabled: bool,
+) -> ConsultResponse:
+    report, preview_img, final_state = agent.run(
+        image_path,
+        query,
+        session_id=session_id,
+        reviewer_enabled=reviewer_enabled,
+    )
+    row = _save_consultation(
+        db,
+        session_id=session_id,
+        query=query,
+        report=report,
+        image_path=image_path,
+        has_preview=preview_img is not None,
+    )
+    return _build_consult_response(
+        row=row,
+        report=report,
+        preview_img=preview_img,
+        final_state=final_state,
+    )
+
+
+def _process_consultation_job(job_id: str) -> None:
+    db = SessionLocal()
+    try:
+        job = db.get(ConsultationJobRecord, job_id)
+        if job is None:
+            return
+        queued_warnings = _json_loads_list(job.warnings_json)
+
+        job.status = "running"
+        job.started_at = datetime.utcnow()
+        db.commit()
+
+        agent: LiverSmartAgent = app.state.agent
+        consult_response = _run_consultation(
+            agent=agent,
+            db=db,
+            session_id=job.session_id,
+            query=job.query,
+            image_path=job.image_path,
+            reviewer_enabled=job.reviewer_enabled,
+        )
+
+        job.status = "completed"
+        job.error_message = None
+        job.report = consult_response.report
+        job.preview_image_base64 = consult_response.preview_image_base64
+        job.intent = consult_response.intent
+        job.perception_status = consult_response.perception_status
+        job.warnings_json = _json_dumps([*queued_warnings, *consult_response.warnings])
+        job.errors_json = _json_dumps(consult_response.errors)
+        job.evidence_json = _json_dumps(consult_response.evidence)
+        job.trace_json = _json_dumps(consult_response.trace)
+        job.consultation_id = consult_response.consultation_id
+        job.completed_at = datetime.utcnow()
+        db.commit()
+    except Exception as exc:
+        job = db.get(ConsultationJobRecord, job_id)
+        if job is not None:
+            job.status = "failed"
+            job.error_message = str(exc)
+            job.completed_at = datetime.utcnow()
+            db.commit()
+    finally:
+        db.close()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
     _cleanup_expired_upload_cache(Path(config.UPLOAD_CACHE_DIR))
     app.state.agent = LiverSmartAgent(api_key=config.LLM_API_KEY or "")
+    app.state.job_queue = InMemoryJobQueue(_process_consultation_job)
+    app.state.job_queue.start()
     yield
+    app.state.job_queue.stop()
 
 
 app = FastAPI(
@@ -169,27 +304,13 @@ def consult(
     session_id = (body.session_id or "").strip() or str(uuid.uuid4())
     image_path = (body.image_path or "").strip() or (config.DEFAULT_DICOM_DIR or "").strip() or None
 
-    agent: LiverSmartAgent = app.state.agent
-    report, preview_img, final_state = agent.run(
-        image_path,
-        body.query,
-        session_id=session_id,
-        reviewer_enabled=body.reviewer_enabled,
-    )
-
-    row = _save_consultation(
-        db,
+    return _run_consultation(
+        agent=app.state.agent,
+        db=db,
         session_id=session_id,
         query=body.query,
-        report=report,
         image_path=image_path,
-        has_preview=preview_img is not None,
-    )
-    return _build_consult_response(
-        row=row,
-        report=report,
-        preview_img=preview_img,
-        final_state=final_state,
+        reviewer_enabled=body.reviewer_enabled,
     )
 
 
@@ -231,37 +352,134 @@ async def consult_upload(
             temp_file_path.unlink(missing_ok=True)
 
         image_path = str(cached_file_path)
-        agent: LiverSmartAgent = app.state.agent
-        report, preview_img, final_state = agent.run(
-            image_path,
-            query,
+        consult_response = _run_consultation(
+            agent=app.state.agent,
+            db=db,
             session_id=active_session_id,
+            query=query,
+            image_path=image_path,
             reviewer_enabled=reviewer_enabled,
         )
-        warnings = list(final_state.get("warnings", []))
+        warnings = list(consult_response.warnings)
         if cache_hit:
             warnings.append(f"Upload cache hit: reused cached NIfTI file for sha256={content_hash[:12]}.")
         else:
             warnings.append(f"Upload cache miss: stored NIfTI file for sha256={content_hash[:12]}.")
-        final_state["warnings"] = warnings
-
-        row = _save_consultation(
-            db,
-            session_id=active_session_id,
-            query=query,
-            report=report,
-            image_path=image_path,
-            has_preview=preview_img is not None,
-        )
-        return _build_consult_response(
-            row=row,
-            report=report,
-            preview_img=preview_img,
-            final_state=final_state,
-        )
+        return consult_response.model_copy(update={"warnings": warnings})
     finally:
         await image_file.close()
         shutil.rmtree(session_root, ignore_errors=True)
+
+
+@app.post(
+    "/v1/jobs",
+    response_model=JobSubmitResponse,
+    status_code=202,
+    tags=["jobs"],
+    dependencies=[Depends(_optional_service_auth)],
+)
+def submit_consult_job(
+    body: ConsultRequest,
+    db: Annotated[Session, Depends(get_db)],
+) -> JobSubmitResponse:
+    session_id = (body.session_id or "").strip() or str(uuid.uuid4())
+    image_path = (body.image_path or "").strip() or (config.DEFAULT_DICOM_DIR or "").strip() or None
+    job_id = str(uuid.uuid4())
+
+    row = ConsultationJobRecord(
+        id=job_id,
+        session_id=session_id,
+        query=body.query,
+        image_path=image_path,
+        reviewer_enabled=body.reviewer_enabled,
+        status="queued",
+    )
+    db.add(row)
+    db.commit()
+
+    app.state.job_queue.submit(job_id)
+    return JobSubmitResponse(job_id=job_id, session_id=session_id, status="queued")
+
+
+@app.post(
+    "/v1/jobs/upload",
+    response_model=JobSubmitResponse,
+    status_code=202,
+    tags=["jobs"],
+    dependencies=[Depends(_optional_service_auth)],
+)
+async def submit_upload_job(
+    db: Annotated[Session, Depends(get_db)],
+    query: str = Form(...),
+    reviewer_enabled: bool = Form(default=True),
+    session_id: Optional[str] = Form(default=None),
+    image_file: UploadFile = File(...),
+) -> JobSubmitResponse:
+    filename = (image_file.filename or "").lower()
+    if not filename.endswith(".nii.gz"):
+        raise HTTPException(status_code=400, detail="Only .nii.gz uploads are supported.")
+
+    active_session_id = (session_id or "").strip() or str(uuid.uuid4())
+    session_root = Path(config.UPLOADS_DIR) / active_session_id
+    if session_root.exists():
+        shutil.rmtree(session_root)
+    session_root.mkdir(parents=True, exist_ok=True)
+
+    try:
+        temp_file_path = session_root / "incoming.nii.gz"
+        content_hash = _write_upload_and_hash(image_file, temp_file_path)
+        cache_dir, cached_file_path = _resolve_cache_paths(content_hash)
+        cache_hit = cached_file_path.exists() and cached_file_path.is_file()
+
+        if not cache_hit:
+            if cache_dir.exists():
+                shutil.rmtree(cache_dir)
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(temp_file_path), str(cached_file_path))
+        else:
+            temp_file_path.unlink(missing_ok=True)
+
+        job_id = str(uuid.uuid4())
+        warnings = [
+            (
+                f"Upload cache hit: reused cached NIfTI file for sha256={content_hash[:12]}."
+                if cache_hit
+                else f"Upload cache miss: stored NIfTI file for sha256={content_hash[:12]}."
+            )
+        ]
+        row = ConsultationJobRecord(
+            id=job_id,
+            session_id=active_session_id,
+            query=query,
+            image_path=str(cached_file_path),
+            reviewer_enabled=reviewer_enabled,
+            status="queued",
+            warnings_json=_json_dumps(warnings),
+        )
+        db.add(row)
+        db.commit()
+
+        app.state.job_queue.submit(job_id)
+        return JobSubmitResponse(job_id=job_id, session_id=active_session_id, status="queued")
+    finally:
+        await image_file.close()
+        shutil.rmtree(session_root, ignore_errors=True)
+
+
+@app.get(
+    "/v1/jobs/{job_id}",
+    response_model=JobStatusResponse,
+    tags=["jobs"],
+    dependencies=[Depends(_optional_service_auth)],
+)
+def get_job_status(
+    job_id: str,
+    db: Annotated[Session, Depends(get_db)],
+) -> JobStatusResponse:
+    row = db.get(ConsultationJobRecord, job_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Consultation job not found.")
+    return _build_job_status_response(row)
 
 
 @app.get(

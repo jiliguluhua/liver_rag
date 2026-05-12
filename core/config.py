@@ -12,6 +12,7 @@ DOCUMENTS_DIR = str(PROJECT_ROOT / "data" / "documents")
 MODEL_DIR = str(PROJECT_ROOT / "models")
 RESULT_DIR = str(PROJECT_ROOT / "results")
 DB_PATH = str(PROJECT_ROOT / "faiss_index")
+UPLOADS_DIR = str(PROJECT_ROOT / "data" / "uploads")
 
 PERCEPTION_MODEL_NAME = "swin_unetr_btcv_segmentation"
 PERCEPTION_MODEL_PATH = os.path.join(MODEL_DIR, PERCEPTION_MODEL_NAME, "models", "model.pt")
@@ -32,9 +33,10 @@ LLM_MODEL_NAME = os.getenv("LLM_MODEL_NAME", "deepseek-chat").strip()
 
 SERVICE_API_KEY = os.getenv("LIVER_SERVICE_API_KEY", "").strip()
 DEFAULT_DICOM_DIR = os.getenv("LIVER_DEFAULT_DICOM_DIR", "").strip()
+BACKEND_API_URL = os.getenv("LIVER_BACKEND_API_URL", "http://127.0.0.1:8000").strip()
 
 RETRIEVAL_ALPHA = 0.7
 TOP_K = 3
 
-for path in [DOCUMENTS_DIR, MODEL_DIR, RESULT_DIR]:
+for path in [DOCUMENTS_DIR, MODEL_DIR, RESULT_DIR, UPLOADS_DIR]:
     os.makedirs(path, exist_ok=True)

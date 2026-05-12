@@ -15,7 +15,7 @@ class MedicalHybridSearcher:
         self.vector_db = FAISS.load_local(db_path, self.embeddings, allow_dangerous_deserialization=True)
         
         # 2. 准备 Jieba 与自定义字典
-        dict_path = os.path.join(os.path.dirname(__file__), "medical_dict.txt")
+        dict_path = os.path.join(config.BASE_DIR, "medical_dict.txt")
         if os.path.exists(dict_path):
             jieba.load_userdict(dict_path)
             print(f"✅ 成功加载医疗自定义词典: {dict_path}")

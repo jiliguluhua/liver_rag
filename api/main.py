@@ -1,5 +1,5 @@
 """
-HTTP API for Liver RAG agent.
+HTTP API for the Liver RAG agent.
 
 Run from repo root:
   uvicorn api.main:app --host 0.0.0.0 --port 8000 --reload
@@ -11,7 +11,7 @@ import base64
 import io
 import uuid
 from contextlib import asynccontextmanager
-from typing import Annotated
+from typing import Annotated, Optional
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -22,7 +22,7 @@ from api.schemas import ConsultRequest, ConsultResponse, ConsultationSummary, He
 from core import config
 from core.database import get_db, init_db
 from core.models import ConsultationRecord
-from main import LiverSmartAgent
+from services.medical_agent import LiverSmartAgent
 
 
 def _pil_to_png_b64(img: Image.Image) -> str:
@@ -32,7 +32,7 @@ def _pil_to_png_b64(img: Image.Image) -> str:
 
 
 def _optional_service_auth(
-    x_api_key: str | None = Header(default=None, alias="X-API-Key"),
+    x_api_key: Optional[str] = Header(default=None, alias="X-API-Key"),
 ) -> None:
     expected = (config.SERVICE_API_KEY or "").strip()
     if not expected:
@@ -50,7 +50,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Liver RAG Agent API",
-    version="1.0.0",
+    version="1.1.0",
     lifespan=lifespan,
 )
 app.add_middleware(
@@ -66,7 +66,7 @@ app.add_middleware(
 def health() -> HealthResponse:
     return HealthResponse(
         status="ok",
-        agent_ready=bool(config.LLM_API_KEY),
+        agent_ready=True,
         default_image_path_configured=bool((config.DEFAULT_DICOM_DIR or "").strip()),
     )
 
@@ -81,23 +81,16 @@ def consult(
     body: ConsultRequest,
     db: Annotated[Session, Depends(get_db)],
 ) -> ConsultResponse:
-    if not config.LLM_API_KEY:
-        raise HTTPException(
-            status_code=503,
-            detail="LLM_API_KEY 未配置，请在环境变量或 .env 中设置",
-        )
-
-    image_path = (body.image_path or "").strip() or (config.DEFAULT_DICOM_DIR or "").strip()
-    if not image_path:
-        raise HTTPException(
-            status_code=400,
-            detail="请提供 image_path，或在环境变量 LIVER_DEFAULT_DICOM_DIR 中配置默认 DICOM 目录",
-        )
-
     session_id = (body.session_id or "").strip() or str(uuid.uuid4())
+    image_path = (body.image_path or "").strip() or (config.DEFAULT_DICOM_DIR or "").strip() or None
 
     agent: LiverSmartAgent = app.state.agent
-    report, preview_img = agent.run(image_path, body.query)
+    report, preview_img, final_state = agent.run(
+        image_path,
+        body.query,
+        session_id=session_id,
+        reviewer_enabled=body.reviewer_enabled,
+    )
 
     preview_b64 = _pil_to_png_b64(preview_img) if preview_img is not None else None
 
@@ -117,6 +110,13 @@ def consult(
         preview_image_base64=preview_b64,
         consultation_id=row.id,
         session_id=session_id,
+        status=final_state.get("workflow_status", "completed"),
+        intent=final_state.get("intent"),
+        perception_status=final_state.get("perception_status"),
+        warnings=list(final_state.get("warnings", [])),
+        errors=list(final_state.get("errors", [])),
+        evidence=list(final_state.get("evidence", [])),
+        trace=list(final_state.get("trace", [])),
     )
 
 
@@ -128,7 +128,7 @@ def consult(
 )
 def list_consultations(
     db: Annotated[Session, Depends(get_db)],
-    session_id: str | None = Query(default=None, description="按会话筛选"),
+    session_id: Optional[str] = Query(default=None, description="Filter by session ID."),
     limit: int = Query(default=50, ge=1, le=200),
 ) -> list[ConsultationSummary]:
     q = db.query(ConsultationRecord).order_by(ConsultationRecord.created_at.desc())
@@ -159,7 +159,7 @@ def get_consultation(
 ) -> dict:
     row = db.get(ConsultationRecord, consultation_id)
     if row is None:
-        raise HTTPException(status_code=404, detail="记录不存在")
+        raise HTTPException(status_code=404, detail="Consultation record not found.")
     return {
         "id": row.id,
         "session_id": row.session_id,

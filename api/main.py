@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import io
 import os
 import shutil
 import uuid
 import zipfile
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Annotated, Optional
 
@@ -50,6 +52,40 @@ def _safe_extract_zip(zip_path: Path, target_dir: Path) -> None:
             if target_dir.resolve() not in resolved_target.parents and resolved_target != target_dir.resolve():
                 raise HTTPException(status_code=400, detail="Unsafe zip archive path detected.")
         zip_file.extractall(target_dir)
+
+
+def _cleanup_expired_upload_cache(cache_root: Path) -> None:
+    ttl = timedelta(hours=config.UPLOAD_CACHE_TTL_HOURS)
+    now = datetime.utcnow()
+    if not cache_root.exists():
+        return
+    for entry in cache_root.iterdir():
+        if not entry.is_dir():
+            continue
+        modified_at = datetime.utcfromtimestamp(entry.stat().st_mtime)
+        if now - modified_at > ttl:
+            shutil.rmtree(entry, ignore_errors=True)
+
+
+def _write_upload_and_hash(dicom_zip: UploadFile, output_path: Path) -> str:
+    hasher = hashlib.sha256()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("wb") as f:
+        while True:
+            chunk = dicom_zip.file.read(1024 * 1024)
+            if not chunk:
+                break
+            hasher.update(chunk)
+            f.write(chunk)
+    dicom_zip.file.seek(0)
+    return hasher.hexdigest()
+
+
+def _resolve_cache_paths(content_hash: str) -> tuple[Path, Path, Path]:
+    cache_dir = Path(config.UPLOAD_CACHE_DIR) / content_hash
+    cache_archive_path = cache_dir / "archive.zip"
+    extract_dir = cache_dir / "extracted"
+    return cache_dir, cache_archive_path, extract_dir
 
 
 def _save_consultation(
@@ -100,6 +136,7 @@ def _build_consult_response(
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
+    _cleanup_expired_upload_cache(Path(config.UPLOAD_CACHE_DIR))
     app.state.agent = LiverSmartAgent(api_key=config.LLM_API_KEY or "")
     yield
 
@@ -186,23 +223,28 @@ async def consult_upload(
         raise HTTPException(status_code=400, detail="Only .zip uploads are supported for DICOM series.")
 
     active_session_id = (session_id or "").strip() or str(uuid.uuid4())
-    upload_root = Path(config.UPLOADS_DIR) / active_session_id
-    archive_path = upload_root / dicom_zip.filename
-    extract_dir = upload_root / "extracted"
-
-    if upload_root.exists():
-        shutil.rmtree(upload_root)
-    extract_dir.mkdir(parents=True, exist_ok=True)
+    session_root = Path(config.UPLOADS_DIR) / active_session_id
+    if session_root.exists():
+        shutil.rmtree(session_root)
+    session_root.mkdir(parents=True, exist_ok=True)
 
     try:
-        with archive_path.open("wb") as f:
-            shutil.copyfileobj(dicom_zip.file, f)
+        temp_archive_path = session_root / "incoming.zip"
+        content_hash = _write_upload_and_hash(dicom_zip, temp_archive_path)
+        cache_dir, cache_archive_path, extract_dir = _resolve_cache_paths(content_hash)
+        cache_hit = cache_archive_path.exists() and extract_dir.exists() and any(extract_dir.iterdir())
 
-        _safe_extract_zip(archive_path, extract_dir)
-
-        extracted_items = [p for p in extract_dir.iterdir()]
-        if not extracted_items:
-            raise HTTPException(status_code=400, detail="Uploaded zip archive is empty.")
+        if not cache_hit:
+            if cache_dir.exists():
+                shutil.rmtree(cache_dir)
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(temp_archive_path), str(cache_archive_path))
+            extract_dir.mkdir(parents=True, exist_ok=True)
+            _safe_extract_zip(cache_archive_path, extract_dir)
+            if not any(extract_dir.iterdir()):
+                raise HTTPException(status_code=400, detail="Uploaded zip archive is empty.")
+        else:
+            temp_archive_path.unlink(missing_ok=True)
 
         image_path = str(extract_dir)
         agent: LiverSmartAgent = app.state.agent
@@ -212,6 +254,12 @@ async def consult_upload(
             session_id=active_session_id,
             reviewer_enabled=reviewer_enabled,
         )
+        warnings = list(final_state.get("warnings", []))
+        if cache_hit:
+            warnings.append(f"Upload cache hit: reused extracted series for sha256={content_hash[:12]}.")
+        else:
+            warnings.append(f"Upload cache miss: extracted and cached series for sha256={content_hash[:12]}.")
+        final_state["warnings"] = warnings
 
         row = _save_consultation(
             db,
@@ -229,6 +277,7 @@ async def consult_upload(
         )
     finally:
         await dicom_zip.close()
+        shutil.rmtree(session_root, ignore_errors=True)
 
 
 @app.get(

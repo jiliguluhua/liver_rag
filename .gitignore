@@ -16,3 +16,5 @@ data/nnunet_io/raw/
 *.model
 *.nii.gz
 data/*.db
+data/uploads/
+data/upload_cache/

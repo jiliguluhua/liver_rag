@@ -273,6 +273,11 @@
           Enable reviewer
         </label>
 
+        <label class="checkbox-row">
+          <input id="asyncMode" type="checkbox" checked />
+          Use async job mode
+        </label>
+
         <div class="actions">
           <button class="primary" id="analyzeBtn" type="button">Analyze</button>
           <button class="secondary" id="clearBtn" type="button">Clear</button>
@@ -290,6 +295,11 @@
         <h3>Response</h3>
         <div id="reportBox" class="mono">No response yet.</div>
       </div>
+    </section>
+
+    <section class="panel">
+      <h2>Job</h2>
+      <div id="jobBox" class="mono">No job yet.</div>
     </section>
 
     <section class="panel">
@@ -316,11 +326,13 @@
     const uploadMetaEl = document.getElementById("uploadMeta");
     const queryEl = document.getElementById("query");
     const reviewerEnabledEl = document.getElementById("reviewerEnabled");
+    const asyncModeEl = document.getElementById("asyncMode");
     const analyzeBtn = document.getElementById("analyzeBtn");
     const clearBtn = document.getElementById("clearBtn");
     const statusBox = document.getElementById("statusBox");
     const previewBox = document.getElementById("previewBox");
     const reportBox = document.getElementById("reportBox");
+    const jobBox = document.getElementById("jobBox");
     const warningsBox = document.getElementById("warningsBox");
     const evidenceBox = document.getElementById("evidenceBox");
     const traceBox = document.getElementById("traceBox");
@@ -340,9 +352,11 @@
       imagePathEl.value = "";
       imageFileEl.value = "";
       reviewerEnabledEl.checked = true;
+      asyncModeEl.checked = true;
       uploadMetaEl.textContent = "No file selected. The backend will use path mode.";
       setStatus("Ready.");
       reportBox.textContent = "No response yet.";
+      jobBox.textContent = "No job yet.";
       warningsBox.textContent = "None.";
       evidenceBox.textContent = "None.";
       traceBox.textContent = "None.";
@@ -355,6 +369,7 @@
       const imagePath = imagePathEl.value.trim();
       const imageFile = imageFileEl.files[0];
       const reviewerEnabled = reviewerEnabledEl.checked;
+      const asyncMode = asyncModeEl.checked;
 
       if (!query) {
         setStatus("Please enter a question before submitting.", "warn");
@@ -363,13 +378,12 @@
 
       try {
         analyzeBtn.disabled = true;
-        setStatus(imageFile ? "Uploading NIfTI file and waiting for backend processing..." : "Sending request to backend...");
-        const payload = imageFile
-          ? await sendUploadRequest(backendUrl, query, reviewerEnabled, imageFile)
-          : await sendJsonRequest(backendUrl, query, imagePath, reviewerEnabled);
+        const result = asyncMode
+          ? await runAsyncFlow(backendUrl, query, imagePath, reviewerEnabled, imageFile)
+          : await runSyncFlow(backendUrl, query, imagePath, reviewerEnabled, imageFile);
 
-        setStatus("Analysis completed.", "ok");
-        renderResult(payload);
+        setStatus(asyncMode ? "Async analysis completed." : "Analysis completed.", "ok");
+        renderResult(result);
       } catch (error) {
         setStatus(error.message || "Request failed.", "err");
       } finally {
@@ -377,8 +391,41 @@
       }
     });
 
+    async function runSyncFlow(backendUrl, query, imagePath, reviewerEnabled, imageFile) {
+      jobBox.textContent = "Synchronous mode: no job created.";
+      setStatus(imageFile ? "Uploading NIfTI file and waiting for backend processing..." : "Sending request to backend...");
+      return imageFile
+        ? sendUploadRequest(backendUrl, query, reviewerEnabled, imageFile)
+        : sendJsonRequest(backendUrl, query, imagePath, reviewerEnabled);
+    }
+
+    async function runAsyncFlow(backendUrl, query, imagePath, reviewerEnabled, imageFile) {
+      setStatus(imageFile ? "Uploading NIfTI file and creating async job..." : "Submitting async job...");
+      const submitted = imageFile
+        ? await submitUploadJob(backendUrl, query, reviewerEnabled, imageFile)
+        : await submitJsonJob(backendUrl, query, imagePath, reviewerEnabled);
+      renderJob(submitted);
+      setStatus("Job submitted. Polling backend job status...");
+      return pollJobUntilFinished(backendUrl, submitted.job_id);
+    }
+
     async function sendJsonRequest(backendUrl, query, imagePath, reviewerEnabled) {
       const response = await fetch(`${backendUrl}/v1/consult`, {
+        method: "POST",
+        headers: requestHeaders({
+          "Content-Type": "application/json",
+        }),
+        body: JSON.stringify({
+          query,
+          image_path: imagePath || null,
+          reviewer_enabled: reviewerEnabled,
+        }),
+      });
+      return handleResponse(response);
+    }
+
+    async function submitJsonJob(backendUrl, query, imagePath, reviewerEnabled) {
+      const response = await fetch(`${backendUrl}/v1/jobs`, {
         method: "POST",
         headers: requestHeaders({
           "Content-Type": "application/json",
@@ -406,6 +453,47 @@
       return handleResponse(response);
     }
 
+    async function submitUploadJob(backendUrl, query, reviewerEnabled, imageFile) {
+      const formData = new FormData();
+      formData.append("query", query);
+      formData.append("reviewer_enabled", String(reviewerEnabled));
+      formData.append("image_file", imageFile);
+
+      const response = await fetch(`${backendUrl}/v1/jobs/upload`, {
+        method: "POST",
+        headers: requestHeaders(),
+        body: formData,
+      });
+      return handleResponse(response);
+    }
+
+    async function fetchJob(backendUrl, jobId) {
+      const response = await fetch(`${backendUrl}/v1/jobs/${jobId}`, {
+        method: "GET",
+        headers: requestHeaders(),
+      });
+      return handleResponse(response);
+    }
+
+    async function pollJobUntilFinished(backendUrl, jobId) {
+      const startedAt = Date.now();
+      while (true) {
+        const job = await fetchJob(backendUrl, jobId);
+        renderJob(job);
+        const status = job.status || "unknown";
+        if (status === "completed") {
+          return job.result || {};
+        }
+        if (status === "failed") {
+          throw new Error(job.error_message || "Async job failed.");
+        }
+        if (Date.now() - startedAt > 120000) {
+          throw new Error("Async job polling timed out after 120 seconds.");
+        }
+        await sleep(1500);
+      }
+    }
+
     function requestHeaders(extraHeaders = {}) {
       const headers = new Headers(extraHeaders);
       const apiKey = serviceApiKeyEl.value.trim();
@@ -426,6 +514,30 @@
     function setStatus(text, kind = "") {
       statusBox.className = `status${kind ? ` ${kind}` : ""}`;
       statusBox.textContent = text;
+    }
+
+    function renderJob(job) {
+      const lines = [
+        `Job ID: ${job.job_id || "-"}`,
+        `Session ID: ${job.session_id || "-"}`,
+        `Status: ${job.status || "-"}`,
+      ];
+      if (job.consultation_id != null) {
+        lines.push(`Consultation ID: ${job.consultation_id}`);
+      }
+      if (job.created_at) {
+        lines.push(`Created: ${job.created_at}`);
+      }
+      if (job.started_at) {
+        lines.push(`Started: ${job.started_at}`);
+      }
+      if (job.completed_at) {
+        lines.push(`Completed: ${job.completed_at}`);
+      }
+      if (job.error_message) {
+        lines.push(`Error: ${job.error_message}`);
+      }
+      jobBox.textContent = lines.join("\n");
     }
 
     function renderResult(payload) {
@@ -468,6 +580,10 @@
         .replace(/>/g, "&gt;")
         .replace(/"/g, "&quot;")
         .replace(/'/g, "&#039;");
+    }
+
+    function sleep(ms) {
+      return new Promise((resolve) => window.setTimeout(resolve, ms));
     }
   </script>
 </body>

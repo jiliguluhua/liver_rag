@@ -105,12 +105,12 @@ sequenceDiagram
     API-->>Client: 202 Accepted + job_id
 
     Worker->>Queue: 获取下一个任务
-    Queue-->>Worker: 返回 job_id
+    Queue-->>Worker: 发送 job_id
     Worker->>DB: 将任务状态改为 running
     Worker->>Agent: 执行咨询工作流
     Agent-->>Worker: 返回 report, preview, trace, evidence
     Worker->>DB: 写入 consultation 记录
-    Worker->>DB: 更新 job 为 completed，并保存结果快照
+    Worker->>DB: 更新 job 为 completed，并保存结果snapshot
 
     Client->>API: GET /v1/jobs/:job_id
     API->>DB: 查询 job 记录

@@ -1,0 +1,474 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>LiverSmart Demo</title>
+  <style>
+    :root {
+      --bg: #eef3f8;
+      --panel: #ffffff;
+      --line: #d7e0ea;
+      --text: #16202a;
+      --muted: #627180;
+      --accent: #1e5eff;
+      --accent-soft: #e8efff;
+      --ok: #1f8a4c;
+      --warn: #aa6b00;
+      --err: #b42318;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      color: var(--text);
+      background:
+        radial-gradient(circle at top left, #f6eadf 0, transparent 28%),
+        linear-gradient(180deg, #f7f5f2 0%, var(--bg) 100%);
+    }
+
+    .page {
+      width: min(1180px, calc(100vw - 32px));
+      margin: 24px auto 40px;
+      display: grid;
+      grid-template-columns: minmax(0, 1.5fr) minmax(320px, 0.9fr);
+      gap: 20px;
+    }
+
+    .hero {
+      grid-column: 1 / -1;
+      padding: 24px 28px;
+      border: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.9);
+      border-radius: 8px;
+      backdrop-filter: blur(14px);
+    }
+
+    .hero h1 {
+      margin: 0 0 8px;
+      font-size: 32px;
+      line-height: 1.1;
+      font-weight: 700;
+    }
+
+    .hero p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 15px;
+    }
+
+    .panel {
+      border: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.95);
+      border-radius: 8px;
+      padding: 18px;
+    }
+
+    .panel h2 {
+      margin: 0 0 14px;
+      font-size: 18px;
+    }
+
+    .stack {
+      display: grid;
+      gap: 14px;
+    }
+
+    label {
+      display: grid;
+      gap: 6px;
+      font-size: 13px;
+      color: var(--muted);
+    }
+
+    input[type="text"],
+    input[type="password"],
+    textarea,
+    input[type="file"] {
+      width: 100%;
+      border: 1px solid var(--line);
+      background: #fff;
+      color: var(--text);
+      border-radius: 6px;
+      padding: 11px 12px;
+      font: inherit;
+    }
+
+    textarea {
+      resize: vertical;
+      min-height: 112px;
+    }
+
+    .checkbox-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 14px;
+      color: var(--text);
+    }
+
+    .actions {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    button {
+      appearance: none;
+      border: 1px solid transparent;
+      border-radius: 6px;
+      padding: 11px 16px;
+      font: inherit;
+      cursor: pointer;
+      transition: transform 120ms ease, background 120ms ease;
+    }
+
+    button:hover {
+      transform: translateY(-1px);
+    }
+
+    .primary {
+      background: var(--accent);
+      color: #fff;
+    }
+
+    .secondary {
+      background: var(--accent-soft);
+      color: var(--accent);
+      border-color: #cbd9ff;
+    }
+
+    .meta {
+      font-size: 13px;
+      color: var(--muted);
+    }
+
+    .status {
+      padding: 12px 14px;
+      border-radius: 6px;
+      border: 1px solid var(--line);
+      background: #f8fafc;
+      color: var(--muted);
+      min-height: 48px;
+      white-space: pre-wrap;
+    }
+
+    .status.ok {
+      color: var(--ok);
+      border-color: #b7e0c4;
+      background: #f1fcf5;
+    }
+
+    .status.warn {
+      color: var(--warn);
+      border-color: #f2d29f;
+      background: #fff8ef;
+    }
+
+    .status.err {
+      color: var(--err);
+      border-color: #efc6c2;
+      background: #fff3f2;
+    }
+
+    .result-block {
+      border-top: 1px solid var(--line);
+      padding-top: 14px;
+      margin-top: 14px;
+    }
+
+    .result-block h3 {
+      margin: 0 0 8px;
+      font-size: 15px;
+    }
+
+    .mono {
+      font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+      font-size: 12px;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .evidence-item,
+    .trace-item {
+      padding: 10px 0;
+      border-top: 1px solid #edf2f7;
+    }
+
+    .evidence-item:first-child,
+    .trace-item:first-child {
+      border-top: 0;
+      padding-top: 0;
+    }
+
+    .preview {
+      width: 100%;
+      min-height: 220px;
+      border: 1px dashed var(--line);
+      border-radius: 6px;
+      display: grid;
+      place-items: center;
+      overflow: hidden;
+      background: #fbfdff;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .preview img {
+      width: 100%;
+      height: auto;
+      display: block;
+    }
+
+    @media (max-width: 900px) {
+      .page {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <section class="hero">
+      <h1>LiverSmart Demo</h1>
+      <p>Simple browser UI for the FastAPI backend. Directory-path mode and zip upload are both supported here.</p>
+    </section>
+
+    <section class="panel">
+      <h2>Request</h2>
+      <div class="stack">
+        <label>
+          Backend API URL
+          <input id="backendUrl" type="text" value="http://127.0.0.1:8000" />
+        </label>
+
+        <label>
+          Service API Key
+          <input id="serviceApiKey" type="password" value="" />
+        </label>
+
+        <label>
+          DICOM directory path
+          <input id="dicomDir" type="text" value="" placeholder="Optional local directory path for backend processing" />
+        </label>
+
+        <label>
+          DICOM zip upload
+          <input id="dicomZip" type="file" accept=".zip" />
+        </label>
+
+        <div class="meta" id="uploadMeta">No zip selected. The backend will use directory mode.</div>
+
+        <label>
+          Case question
+          <textarea id="query" placeholder="Example: summarize the next recommended examination step"></textarea>
+        </label>
+
+        <label class="checkbox-row">
+          <input id="reviewerEnabled" type="checkbox" checked />
+          Enable reviewer
+        </label>
+
+        <div class="actions">
+          <button class="primary" id="analyzeBtn" type="button">Analyze</button>
+          <button class="secondary" id="clearBtn" type="button">Clear</button>
+        </div>
+
+        <div id="statusBox" class="status">Ready.</div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>Preview</h2>
+      <div class="preview" id="previewBox">No preview yet.</div>
+
+      <div class="result-block">
+        <h3>Response</h3>
+        <div id="reportBox" class="mono">No response yet.</div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>Warnings</h2>
+      <div id="warningsBox" class="mono">None.</div>
+    </section>
+
+    <section class="panel">
+      <h2>Evidence</h2>
+      <div id="evidenceBox" class="mono">None.</div>
+    </section>
+
+    <section class="panel" style="grid-column: 1 / -1;">
+      <h2>Trace</h2>
+      <div id="traceBox" class="mono">None.</div>
+    </section>
+  </div>
+
+  <script>
+    const backendUrlEl = document.getElementById("backendUrl");
+    const serviceApiKeyEl = document.getElementById("serviceApiKey");
+    const dicomDirEl = document.getElementById("dicomDir");
+    const dicomZipEl = document.getElementById("dicomZip");
+    const uploadMetaEl = document.getElementById("uploadMeta");
+    const queryEl = document.getElementById("query");
+    const reviewerEnabledEl = document.getElementById("reviewerEnabled");
+    const analyzeBtn = document.getElementById("analyzeBtn");
+    const clearBtn = document.getElementById("clearBtn");
+    const statusBox = document.getElementById("statusBox");
+    const previewBox = document.getElementById("previewBox");
+    const reportBox = document.getElementById("reportBox");
+    const warningsBox = document.getElementById("warningsBox");
+    const evidenceBox = document.getElementById("evidenceBox");
+    const traceBox = document.getElementById("traceBox");
+
+    dicomZipEl.addEventListener("change", () => {
+      const file = dicomZipEl.files[0];
+      if (!file) {
+        uploadMetaEl.textContent = "No zip selected. The backend will use directory mode.";
+        return;
+      }
+      const sizeMb = (file.size / (1024 * 1024)).toFixed(2);
+      uploadMetaEl.textContent = `Selected ${file.name} (${sizeMb} MB).`;
+    });
+
+    clearBtn.addEventListener("click", () => {
+      queryEl.value = "";
+      dicomDirEl.value = "";
+      dicomZipEl.value = "";
+      reviewerEnabledEl.checked = true;
+      uploadMetaEl.textContent = "No zip selected. The backend will use directory mode.";
+      setStatus("Ready.");
+      reportBox.textContent = "No response yet.";
+      warningsBox.textContent = "None.";
+      evidenceBox.textContent = "None.";
+      traceBox.textContent = "None.";
+      previewBox.innerHTML = "No preview yet.";
+    });
+
+    analyzeBtn.addEventListener("click", async () => {
+      const backendUrl = backendUrlEl.value.trim().replace(/\/$/, "");
+      const query = queryEl.value.trim();
+      const dicomDir = dicomDirEl.value.trim();
+      const dicomZip = dicomZipEl.files[0];
+      const reviewerEnabled = reviewerEnabledEl.checked;
+
+      if (!query) {
+        setStatus("Please enter a question before submitting.", "warn");
+        return;
+      }
+
+      try {
+        analyzeBtn.disabled = true;
+        setStatus(dicomZip ? "Uploading zip and waiting for backend processing..." : "Sending request to backend...");
+        const payload = dicomZip
+          ? await sendUploadRequest(backendUrl, query, reviewerEnabled, dicomZip)
+          : await sendJsonRequest(backendUrl, query, dicomDir, reviewerEnabled);
+
+        setStatus("Analysis completed.", "ok");
+        renderResult(payload);
+      } catch (error) {
+        setStatus(error.message || "Request failed.", "err");
+      } finally {
+        analyzeBtn.disabled = false;
+      }
+    });
+
+    async function sendJsonRequest(backendUrl, query, dicomDir, reviewerEnabled) {
+      const response = await fetch(`${backendUrl}/v1/consult`, {
+        method: "POST",
+        headers: requestHeaders({
+          "Content-Type": "application/json",
+        }),
+        body: JSON.stringify({
+          query,
+          image_path: dicomDir || null,
+          reviewer_enabled: reviewerEnabled,
+        }),
+      });
+      return handleResponse(response);
+    }
+
+    async function sendUploadRequest(backendUrl, query, reviewerEnabled, dicomZip) {
+      const formData = new FormData();
+      formData.append("query", query);
+      formData.append("reviewer_enabled", String(reviewerEnabled));
+      formData.append("dicom_zip", dicomZip);
+
+      const response = await fetch(`${backendUrl}/v1/consult/upload`, {
+        method: "POST",
+        headers: requestHeaders(),
+        body: formData,
+      });
+      return handleResponse(response);
+    }
+
+    function requestHeaders(extraHeaders = {}) {
+      const headers = new Headers(extraHeaders);
+      const apiKey = serviceApiKeyEl.value.trim();
+      if (apiKey) {
+        headers.set("X-API-Key", apiKey);
+      }
+      return headers;
+    }
+
+    async function handleResponse(response) {
+      if (!response.ok) {
+        const text = await response.text();
+        throw new Error(text || `HTTP ${response.status}`);
+      }
+      return response.json();
+    }
+
+    function setStatus(text, kind = "") {
+      statusBox.className = `status${kind ? ` ${kind}` : ""}`;
+      statusBox.textContent = text;
+    }
+
+    function renderResult(payload) {
+      reportBox.textContent = payload.report || "No report.";
+
+      const warnings = payload.warnings || [];
+      warningsBox.textContent = warnings.length ? warnings.join("\n") : "None.";
+
+      const evidence = payload.evidence || [];
+      evidenceBox.innerHTML = evidence.length
+        ? evidence.map((item, idx) => `
+            <div class="evidence-item">
+              <strong>Evidence ${idx + 1} | ${escapeHtml(item.source || "unknown")}</strong>
+              <div>${escapeHtml(item.snippet || "")}</div>
+            </div>
+          `).join("")
+        : "None.";
+
+      const trace = payload.trace || [];
+      traceBox.innerHTML = trace.length
+        ? trace.map((item) => `
+            <div class="trace-item">
+              <strong>${escapeHtml(item.node || "-")}</strong>
+              <div>${escapeHtml(item.status || "-")} | ${escapeHtml(item.message || "")}</div>
+            </div>
+          `).join("")
+        : "None.";
+
+      if (payload.preview_image_base64) {
+        previewBox.innerHTML = `<img alt="preview" src="data:image/png;base64,${payload.preview_image_base64}" />`;
+      } else {
+        previewBox.textContent = "No preview returned.";
+      }
+    }
+
+    function escapeHtml(text) {
+      return String(text)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#039;");
+    }
+  </script>
+</body>
+</html>

@@ -39,7 +39,7 @@ with st.sidebar:
         "LLM API Key",
         value=config.LLM_API_KEY or "",
         type="password",
-        help="You can also configure LLM_API_KEY in your environment or .env file.",
+        help="Optional for quick testing. Leave blank to run in fallback mode without spending tokens.",
     )
 
     default_dir = config.DEFAULT_DICOM_DIR or ""
@@ -51,16 +51,19 @@ with st.sidebar:
 
     st.divider()
 
-    if api_key:
-        try:
-            if "agent" not in st.session_state:
-                with st.spinner("Initializing LiverSmart agent..."):
-                    st.session_state.agent = get_agent(api_key)
-                st.success("Agent ready.")
-        except Exception as exc:
-            st.error(f"Initialization failed: {exc}")
-    else:
-        st.warning("Configure an API key to enable the chat workflow.")
+    try:
+        current_api_key = api_key or ""
+        if st.session_state.get("agent_api_key") != current_api_key:
+            with st.spinner("Initializing LiverSmart agent..."):
+                st.session_state.agent = get_agent(current_api_key)
+            st.session_state.agent_api_key = current_api_key
+
+        if current_api_key:
+            st.success("Agent ready.")
+        else:
+            st.info("Fallback mode enabled: retrieval and backend flow work without consuming LLM tokens.")
+    except Exception as exc:
+        st.error(f"Initialization failed: {exc}")
 
     st.divider()
     st.caption("Version: V1.3")
@@ -106,31 +109,34 @@ with col_chat:
             with st.chat_message("assistant"):
                 with st.spinner("Running image analysis and knowledge retrieval..."):
                     try:
-                        if not (dicom_dir or "").strip():
-                            st.error("Please configure a DICOM directory first.")
-                        else:
-                            final_report, preview_img = st.session_state.agent.run(
-                                (dicom_dir or "").strip(),
-                                prompt,
+                        final_report, preview_img, final_state = st.session_state.agent.run(
+                            (dicom_dir or "").strip() or None,
+                            prompt,
+                        )
+
+                        st.markdown(final_report)
+
+                        warnings = final_state.get("warnings", [])
+                        if warnings:
+                            with st.expander("Workflow warnings"):
+                                for warning in warnings:
+                                    st.write(f"- {warning}")
+
+                        if preview_img:
+                            preview_placeholder.image(
+                                preview_img,
+                                caption="AI preview result",
+                                use_container_width=True,
                             )
+                            st.session_state.last_image = preview_img
 
-                            st.markdown(final_report)
-
-                            if preview_img:
-                                preview_placeholder.image(
-                                    preview_img,
-                                    caption="AI preview result",
-                                    use_container_width=True,
-                                )
-                                st.session_state.last_image = preview_img
-
-                            st.session_state.messages.append(
-                                {
-                                    "role": "assistant",
-                                    "content": final_report,
-                                    "image": preview_img if preview_img else None,
-                                }
-                            )
+                        st.session_state.messages.append(
+                            {
+                                "role": "assistant",
+                                "content": final_report,
+                                "image": preview_img if preview_img else None,
+                            }
+                        )
                     except Exception as exc:
                         st.error(f"Error: {exc}")
                         st.exception(exc)
@@ -139,4 +145,3 @@ with col_chat:
 
 st.markdown("---")
 st.caption("Research demo only. Clinical use requires separate validation.")
-

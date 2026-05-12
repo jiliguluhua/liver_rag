@@ -15,3 +15,4 @@ data/nnunet_io/raw/
 *.pt
 *.model
 *.nii.gz
+data/*.db

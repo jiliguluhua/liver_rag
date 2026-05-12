@@ -15,17 +15,21 @@ if __name__ == "__main__":
     user_query = "Please analyze the current liver case and suggest the next clinical step."
 
     print("\n" + "=" * 10 + " Start end-to-end run " + "=" * 10)
-    if not my_key:
-        raise SystemExit("Please configure LLM_API_KEY.")
-    if not test_dicom_dir:
-        raise SystemExit("Please configure LIVER_DEFAULT_DICOM_DIR or TEST_DICOM_DIR.")
-
     try:
-        final_report, _preview = agent.run(test_dicom_dir, user_query)
+        final_report, _preview, final_state = agent.run(test_dicom_dir, user_query)
         print("\n" + "=" * 10 + " Final report " + "=" * 10)
         print(final_report)
+        print("\n" + "=" * 10 + " Workflow summary " + "=" * 10)
+        print(
+            {
+                "intent": final_state.get("intent"),
+                "status": final_state.get("workflow_status"),
+                "perception_status": final_state.get("perception_status"),
+                "warning_count": len(final_state.get("warnings", [])),
+                "error_count": len(final_state.get("errors", [])),
+            }
+        )
         print("\n" + "-" * 60)
     except Exception as exc:
         print("Run failed:")
         raise exc
-

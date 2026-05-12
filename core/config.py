@@ -24,6 +24,12 @@ LLM_API_KEY = os.getenv("LLM_API_KEY", "").strip()
 LLM_BASE_URL = os.getenv("LLM_BASE_URL", "https://api.deepseek.com").strip()
 LLM_MODEL_NAME = os.getenv("LLM_MODEL_NAME", "deepseek-chat").strip()
 
+# Example DeepSeek-compatible settings for real LLM calls.
+# Keep these commented for fallback-only testing with zero token usage.
+# LLM_API_KEY = "your-deepseek-api-key"
+# LLM_BASE_URL = "https://api.deepseek.com"
+# LLM_MODEL_NAME = "deepseek-chat"
+
 SERVICE_API_KEY = os.getenv("LIVER_SERVICE_API_KEY", "").strip()
 DEFAULT_DICOM_DIR = os.getenv("LIVER_DEFAULT_DICOM_DIR", "").strip()
 

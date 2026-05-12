@@ -117,6 +117,30 @@ def _extract_preview_image(payload: dict[str, Any]) -> Any:
     return payload.get("preview_img")
 
 
+def _summarize_input_path(image_path: str) -> dict[str, Any]:
+    summary: dict[str, Any] = {
+        "image_path": image_path,
+        "exists": os.path.exists(image_path),
+    }
+    if not image_path or not os.path.exists(image_path):
+        return summary
+
+    summary["is_dir"] = os.path.isdir(image_path)
+    if os.path.isdir(image_path):
+        try:
+            entries = sorted(os.listdir(image_path))
+            summary["entry_count"] = len(entries)
+            summary["sample_entries"] = entries[:10]
+        except Exception as exc:
+            summary["listdir_error"] = str(exc)
+    else:
+        try:
+            summary["file_size_bytes"] = os.path.getsize(image_path)
+        except Exception as exc:
+            summary["stat_error"] = str(exc)
+    return summary
+
+
 def intent_analyzer_node(state: AgentState):
     start_time = time.perf_counter()
     query = state["query"]
@@ -311,6 +335,10 @@ def perception_node(state: AgentState):
                     "completed",
                     "Perception entered placeholder mode because model weights are missing.",
                     start_time=start_time,
+                    metadata={
+                        "model_path": config.PERCEPTION_MODEL_PATH,
+                        "input_summary": _summarize_input_path(image_path),
+                    },
                 )
             ],
         }
@@ -330,15 +358,25 @@ def perception_node(state: AgentState):
                     "completed",
                     "Perception completed successfully.",
                     start_time=start_time,
-                    metadata={"volume_ml": volume_ml},
+                    metadata={
+                        "volume_ml": volume_ml,
+                        "model_path": config.PERCEPTION_MODEL_PATH,
+                        "input_summary": _summarize_input_path(image_path),
+                    },
                 )
             ],
         }
     except Exception as exc:
+        input_summary = _summarize_input_path(image_path)
         return {
             "perception_status": "failed",
             "perception_data": "Perception module failed; report should rely on retrieval evidence only.",
-            "perception_payload": {},
+            "perception_payload": {
+                "error": str(exc),
+                "model_path": config.PERCEPTION_MODEL_PATH,
+                "meta_path": config.PERCEPTION_META_PATH,
+                "input_summary": input_summary,
+            },
             "preview_image": None,
             "warnings": [f"Perception failed and the workflow degraded to retrieval-only mode: {exc}"],
             "errors": [f"perception_error: {exc}"],
@@ -349,6 +387,11 @@ def perception_node(state: AgentState):
                     "Perception failed; workflow degraded gracefully.",
                     start_time=start_time,
                     error=str(exc),
+                    metadata={
+                        "model_path": config.PERCEPTION_MODEL_PATH,
+                        "meta_path": config.PERCEPTION_META_PATH,
+                        "input_summary": input_summary,
+                    },
                 )
             ],
         }

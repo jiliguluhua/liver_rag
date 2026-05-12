@@ -235,7 +235,7 @@
   <div class="page">
     <section class="hero">
       <h1>LiverSmart Demo</h1>
-      <p>Simple browser UI for the FastAPI backend. Directory-path mode and zip upload are both supported here.</p>
+      <p>Simple browser UI for the FastAPI backend. You can submit a local NIfTI path or upload a single .nii.gz file.</p>
     </section>
 
     <section class="panel">
@@ -252,16 +252,16 @@
         </label>
 
         <label>
-          DICOM directory path
-          <input id="dicomDir" type="text" value="" placeholder="Optional local directory path for backend processing" />
+          NIfTI file path
+          <input id="imagePath" type="text" value="" placeholder="Optional local .nii.gz path visible to the backend" />
         </label>
 
         <label>
-          DICOM zip upload
-          <input id="dicomZip" type="file" accept=".zip" />
+          NIfTI upload
+          <input id="imageFile" type="file" accept=".nii.gz" />
         </label>
 
-        <div class="meta" id="uploadMeta">No zip selected. The backend will use directory mode.</div>
+        <div class="meta" id="uploadMeta">No file selected. The backend will use path mode.</div>
 
         <label>
           Case question
@@ -311,8 +311,8 @@
   <script>
     const backendUrlEl = document.getElementById("backendUrl");
     const serviceApiKeyEl = document.getElementById("serviceApiKey");
-    const dicomDirEl = document.getElementById("dicomDir");
-    const dicomZipEl = document.getElementById("dicomZip");
+    const imagePathEl = document.getElementById("imagePath");
+    const imageFileEl = document.getElementById("imageFile");
     const uploadMetaEl = document.getElementById("uploadMeta");
     const queryEl = document.getElementById("query");
     const reviewerEnabledEl = document.getElementById("reviewerEnabled");
@@ -325,10 +325,10 @@
     const evidenceBox = document.getElementById("evidenceBox");
     const traceBox = document.getElementById("traceBox");
 
-    dicomZipEl.addEventListener("change", () => {
-      const file = dicomZipEl.files[0];
+    imageFileEl.addEventListener("change", () => {
+      const file = imageFileEl.files[0];
       if (!file) {
-        uploadMetaEl.textContent = "No zip selected. The backend will use directory mode.";
+        uploadMetaEl.textContent = "No file selected. The backend will use path mode.";
         return;
       }
       const sizeMb = (file.size / (1024 * 1024)).toFixed(2);
@@ -337,10 +337,10 @@
 
     clearBtn.addEventListener("click", () => {
       queryEl.value = "";
-      dicomDirEl.value = "";
-      dicomZipEl.value = "";
+      imagePathEl.value = "";
+      imageFileEl.value = "";
       reviewerEnabledEl.checked = true;
-      uploadMetaEl.textContent = "No zip selected. The backend will use directory mode.";
+      uploadMetaEl.textContent = "No file selected. The backend will use path mode.";
       setStatus("Ready.");
       reportBox.textContent = "No response yet.";
       warningsBox.textContent = "None.";
@@ -352,8 +352,8 @@
     analyzeBtn.addEventListener("click", async () => {
       const backendUrl = backendUrlEl.value.trim().replace(/\/$/, "");
       const query = queryEl.value.trim();
-      const dicomDir = dicomDirEl.value.trim();
-      const dicomZip = dicomZipEl.files[0];
+      const imagePath = imagePathEl.value.trim();
+      const imageFile = imageFileEl.files[0];
       const reviewerEnabled = reviewerEnabledEl.checked;
 
       if (!query) {
@@ -363,10 +363,10 @@
 
       try {
         analyzeBtn.disabled = true;
-        setStatus(dicomZip ? "Uploading zip and waiting for backend processing..." : "Sending request to backend...");
-        const payload = dicomZip
-          ? await sendUploadRequest(backendUrl, query, reviewerEnabled, dicomZip)
-          : await sendJsonRequest(backendUrl, query, dicomDir, reviewerEnabled);
+        setStatus(imageFile ? "Uploading NIfTI file and waiting for backend processing..." : "Sending request to backend...");
+        const payload = imageFile
+          ? await sendUploadRequest(backendUrl, query, reviewerEnabled, imageFile)
+          : await sendJsonRequest(backendUrl, query, imagePath, reviewerEnabled);
 
         setStatus("Analysis completed.", "ok");
         renderResult(payload);
@@ -377,7 +377,7 @@
       }
     });
 
-    async function sendJsonRequest(backendUrl, query, dicomDir, reviewerEnabled) {
+    async function sendJsonRequest(backendUrl, query, imagePath, reviewerEnabled) {
       const response = await fetch(`${backendUrl}/v1/consult`, {
         method: "POST",
         headers: requestHeaders({
@@ -385,18 +385,18 @@
         }),
         body: JSON.stringify({
           query,
-          image_path: dicomDir || null,
+          image_path: imagePath || null,
           reviewer_enabled: reviewerEnabled,
         }),
       });
       return handleResponse(response);
     }
 
-    async function sendUploadRequest(backendUrl, query, reviewerEnabled, dicomZip) {
+    async function sendUploadRequest(backendUrl, query, reviewerEnabled, imageFile) {
       const formData = new FormData();
       formData.append("query", query);
       formData.append("reviewer_enabled", String(reviewerEnabled));
-      formData.append("dicom_zip", dicomZip);
+      formData.append("image_file", imageFile);
 
       const response = await fetch(`${backendUrl}/v1/consult/upload`, {
         method: "POST",

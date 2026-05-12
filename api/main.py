@@ -3,10 +3,8 @@ from __future__ import annotations
 import base64
 import hashlib
 import io
-import os
 import shutil
 import uuid
-import zipfile
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -44,16 +42,6 @@ def _optional_service_auth(
         raise HTTPException(status_code=401, detail="Invalid or missing X-API-Key")
 
 
-def _safe_extract_zip(zip_path: Path, target_dir: Path) -> None:
-    with zipfile.ZipFile(zip_path, "r") as zip_file:
-        for member in zip_file.infolist():
-            member_path = target_dir / member.filename
-            resolved_target = member_path.resolve()
-            if target_dir.resolve() not in resolved_target.parents and resolved_target != target_dir.resolve():
-                raise HTTPException(status_code=400, detail="Unsafe zip archive path detected.")
-        zip_file.extractall(target_dir)
-
-
 def _cleanup_expired_upload_cache(cache_root: Path) -> None:
     ttl = timedelta(hours=config.UPLOAD_CACHE_TTL_HOURS)
     now = datetime.utcnow()
@@ -67,25 +55,24 @@ def _cleanup_expired_upload_cache(cache_root: Path) -> None:
             shutil.rmtree(entry, ignore_errors=True)
 
 
-def _write_upload_and_hash(dicom_zip: UploadFile, output_path: Path) -> str:
+def _write_upload_and_hash(upload_file: UploadFile, output_path: Path) -> str:
     hasher = hashlib.sha256()
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with output_path.open("wb") as f:
         while True:
-            chunk = dicom_zip.file.read(1024 * 1024)
+            chunk = upload_file.file.read(1024 * 1024)
             if not chunk:
                 break
             hasher.update(chunk)
             f.write(chunk)
-    dicom_zip.file.seek(0)
+    upload_file.file.seek(0)
     return hasher.hexdigest()
 
 
-def _resolve_cache_paths(content_hash: str) -> tuple[Path, Path, Path]:
+def _resolve_cache_paths(content_hash: str) -> tuple[Path, Path]:
     cache_dir = Path(config.UPLOAD_CACHE_DIR) / content_hash
-    cache_archive_path = cache_dir / "archive.zip"
-    extract_dir = cache_dir / "extracted"
-    return cache_dir, cache_archive_path, extract_dir
+    cached_file_path = cache_dir / "image.nii.gz"
+    return cache_dir, cached_file_path
 
 
 def _save_consultation(
@@ -217,10 +204,11 @@ async def consult_upload(
     query: str = Form(...),
     reviewer_enabled: bool = Form(default=True),
     session_id: Optional[str] = Form(default=None),
-    dicom_zip: UploadFile = File(...),
+    image_file: UploadFile = File(...),
 ) -> ConsultResponse:
-    if not dicom_zip.filename.lower().endswith(".zip"):
-        raise HTTPException(status_code=400, detail="Only .zip uploads are supported for DICOM series.")
+    filename = (image_file.filename or "").lower()
+    if not filename.endswith(".nii.gz"):
+        raise HTTPException(status_code=400, detail="Only .nii.gz uploads are supported.")
 
     active_session_id = (session_id or "").strip() or str(uuid.uuid4())
     session_root = Path(config.UPLOADS_DIR) / active_session_id
@@ -229,24 +217,20 @@ async def consult_upload(
     session_root.mkdir(parents=True, exist_ok=True)
 
     try:
-        temp_archive_path = session_root / "incoming.zip"
-        content_hash = _write_upload_and_hash(dicom_zip, temp_archive_path)
-        cache_dir, cache_archive_path, extract_dir = _resolve_cache_paths(content_hash)
-        cache_hit = cache_archive_path.exists() and extract_dir.exists() and any(extract_dir.iterdir())
+        temp_file_path = session_root / "incoming.nii.gz"
+        content_hash = _write_upload_and_hash(image_file, temp_file_path)
+        cache_dir, cached_file_path = _resolve_cache_paths(content_hash)
+        cache_hit = cached_file_path.exists() and cached_file_path.is_file()
 
         if not cache_hit:
             if cache_dir.exists():
                 shutil.rmtree(cache_dir)
             cache_dir.mkdir(parents=True, exist_ok=True)
-            shutil.move(str(temp_archive_path), str(cache_archive_path))
-            extract_dir.mkdir(parents=True, exist_ok=True)
-            _safe_extract_zip(cache_archive_path, extract_dir)
-            if not any(extract_dir.iterdir()):
-                raise HTTPException(status_code=400, detail="Uploaded zip archive is empty.")
+            shutil.move(str(temp_file_path), str(cached_file_path))
         else:
-            temp_archive_path.unlink(missing_ok=True)
+            temp_file_path.unlink(missing_ok=True)
 
-        image_path = str(extract_dir)
+        image_path = str(cached_file_path)
         agent: LiverSmartAgent = app.state.agent
         report, preview_img, final_state = agent.run(
             image_path,
@@ -256,9 +240,9 @@ async def consult_upload(
         )
         warnings = list(final_state.get("warnings", []))
         if cache_hit:
-            warnings.append(f"Upload cache hit: reused extracted series for sha256={content_hash[:12]}.")
+            warnings.append(f"Upload cache hit: reused cached NIfTI file for sha256={content_hash[:12]}.")
         else:
-            warnings.append(f"Upload cache miss: extracted and cached series for sha256={content_hash[:12]}.")
+            warnings.append(f"Upload cache miss: stored NIfTI file for sha256={content_hash[:12]}.")
         final_state["warnings"] = warnings
 
         row = _save_consultation(
@@ -276,7 +260,7 @@ async def consult_upload(
             final_state=final_state,
         )
     finally:
-        await dicom_zip.close()
+        await image_file.close()
         shutil.rmtree(session_root, ignore_errors=True)
 
 

@@ -13,7 +13,7 @@
 
 ## 文档导航
 
-- api接口说明见 [`docs/api_documention.md`](C:/Users/21204/Desktop/liver-rag/docs/api_documention.md:1)
+- api接口说明见 [`docs/api_documentation.md`](C:/Users/21204/Desktop/liver-rag/docs/api_documentation.md:1)
 - 后端设计说明见 [`docs/backend_architecture.md`](C:/Users/21204/Desktop/liver-rag/docs/backend_architecture.md:1)
 
 ## 项目结构
@@ -167,7 +167,3 @@ pytest tests
 
 - `legacy/` 用于暂存旧实现或实验性模块，不属于当前主链路
 - `skills/` 当前仅作为预留目录，不承载主流程代码
-
-```
-
-```

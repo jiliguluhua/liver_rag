@@ -343,3 +343,51 @@ def test_consult_accepts_valid_api_key_when_configured(monkeypatch, tmp_path):
 
     assert response.status_code == 200
     assert response.json()["report"] == "authorized report"
+
+
+def test_job_events_stream_returns_error_for_missing_job(monkeypatch, tmp_path):
+    client, _session = _make_client(monkeypatch, tmp_path)
+
+    with client.stream("GET", "/v1/jobs/missing-job/events") as response:
+        body = "".join(chunk.decode("utf-8") if isinstance(chunk, bytes) else chunk for chunk in response.iter_text())
+
+    assert response.status_code == 200
+    assert "event: error" in body
+    assert "Consultation job not found" in body
+
+
+def test_job_events_stream_returns_completed_snapshot(monkeypatch, tmp_path):
+    client, TestingSessionLocal = _make_client(monkeypatch, tmp_path)
+
+    db = TestingSessionLocal()
+    try:
+        row = ConsultationJobRecord(
+            id="job-sse-1",
+            session_id="session-sse",
+            query="sse-query",
+            image_path=None,
+            reviewer_enabled=True,
+            status="completed",
+            report="sse-report",
+            preview_image_base64=None,
+            intent="clinical",
+            perception_status="skipped",
+            warnings_json="[]",
+            errors_json="[]",
+            evidence_json="[]",
+            trace_json="[]",
+            consultation_id=21,
+            created_at=datetime.utcnow(),
+            completed_at=datetime.utcnow(),
+        )
+        db.add(row)
+        db.commit()
+    finally:
+        db.close()
+
+    with client.stream("GET", "/v1/jobs/job-sse-1/events") as response:
+        body = "".join(chunk.decode("utf-8") if isinstance(chunk, bytes) else chunk for chunk in response.iter_text())
+
+    assert response.status_code == 200
+    assert "event: job_completed" in body
+    assert "sse-report" in body

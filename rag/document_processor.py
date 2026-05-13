@@ -10,7 +10,7 @@ sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 import core.config as config
 
 class DocumentProcessor:
-    def __init__(self, db_path="faiss_index"):
+    def __init__(self, db_path=config.DB_PATH):
         self.db_path = db_path
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         print(f"初始化知识处理引擎 (Device: {self.device}) ---")

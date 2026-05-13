@@ -1,57 +1,151 @@
-# Medical Agent: DICOM-to-Decision Support System
+# Liver RAG Backend
 
-本项目是一个基于 **LangGraph** 和 **Hybrid RAG** 架构的医疗智能体系统，旨在实现从 DICOM 影像处理到临床决策支持的全链路自动化。
+一个面向肝病场景的医疗决策支持后端原型，结合了 LangGraph 工作流编排、RAG 检索、医学影像感知、异步任务和 SSE 事件流。
 
-## quick start
+当前系统支持：
 
-1. **启动后端接口**: `uvicorn app.main:app --reload`
-2. **启动前端演示**: `streamlit run streamlit_app.py`（前端待优化）
+- 同步咨询接口
+- 异步任务提交与状态查询
+- `.nii.gz` 影像上传与缓存复用
+- 检索与感知并行分支
+- 报告生成与单轮医学审查
+- 咨询记录持久化
 
-## 系统架构
+## 项目结构
 
-系统由四个核心模块组成:
+```text
+liver-rag/
+├─ api/          # FastAPI routes and Pydantic schemas
+├─ agents/       # LangGraph workflow, nodes, and state definitions
+├─ core/         # Config, database, and shared infrastructure
+├─ data/         # Runtime data, corpora, uploads, and evaluation assets
+├─ docs/         # Architecture and engineering documents
+├─ data/         # Runtime data, corpora, indexes, uploads, and DB artifacts
+├─ frontend/     # Streamlit frontend
+├─ legacy/       # Archived experimental modules
+├─ models/       # Local model weights and configs
+├─ perception/   # Medical perception logic
+├─ rag/          # Retrieval and preprocessing modules
+├─ results/      # Generated outputs and intermediate artifacts
+├─ scripts/      # Manual utilities and demo runners
+├─ services/     # Agent wrapper, queue, and event bus
+├─ skills/       # Reserved placeholder for helper modules
+├─ tests/        # Automated test skeleton
+└─ web/          # Static web assets
+```
 
-1. **影像推理层**：基于 `MONAI` 与 `nnU-Net` 实现 3D 病灶自动分割与特征量化。
-2. **检索增强层 (RAG)**：采用 **FAISS + BM25** 双路召回，并利用 **Cross-Encoder** 进行重排序，确保医学指南检索的严谨性。
-3. **逻辑调度层**：通过 **LangGraph** 维护对话状态机，支持 **Query Rewriting**（提问改写）优化复杂医学意图识别。
-4. **高性能接口**：基于 **FastAPI** 异步框架，结合 **SSE** 协议实现亚秒级流式响应。
+## 核心流程
 
-## 技术栈
+系统主流程由 [`agents/graph.py`](C:/Users/21204/Desktop/liver-rag/agents/graph.py:1) 编排：
 
-- **LLM 编排**: LangGraph, LangChain
-- **医疗 AI**: MONAI, nnU-Net, SimpleITK
-- **检索/向量库**: FAISS, BM25, Cross-Encoder
-- **后端工程**: Python (FastAPI), Redis, MySQL, SSE
-- **前端展示**: Streamlit (快速构建交互式医学影像看板，待优化)
+1. `analyzer` 判断意图，并决定是否进入检索分支和感知分支
+2. `retriever` 从知识库召回证据
+3. `perceptor` 读取影像并执行感知，失败时自动降级
+4. `reporter` 汇总证据与感知结果生成报告
+5. `reviewer` 对生成结果做医学审查
 
----
+API 层由 [`api/main.py`](C:/Users/21204/Desktop/liver-rag/api/main.py:1) 提供，对外暴露同步、异步、上传、历史记录和 SSE 能力。
 
-## 核心技术实现
+## 运行方式
 
-### 1. 混合检索与重排序 (Hybrid Search)
-
-针对医学垂直领域中“术语精确度”与“语义关联性”的双重需求，本项目设计了双路混合检索方案：
-
-- **语义维度 (FAISS)**：捕捉用户提问与医学文献间的深层语义联系。
-- **术语维度 (BM25)**：针对药品名、手术器械等专有名词进行字面硬匹配，弥补向量检索在细粒度术语上的偏差。
-- **精排层 (Rerank)**：引入 Cross-Encoder 对双路召回结果进行重评分，降低 LLM 的生成幻觉。
-
-### 2. 状态机调度与工程优化
-
-- **Query Rewriting (查询改写)**：集成意图识别模块，当原始提问语义模糊或缺乏上下文时，Agent 会利用 LLM 结合历史对话自动生成多角度的优化查询语句（Multiple Queries），提升长尾问题的召回率。
-- **多轮对话管理**：利用 **Redis** 存储会话上下文，并设置 **TTL (Time To Live)** 自动清理陈旧数据，保障系统内存安全。
-- **异步流式交互**：后端采用 **FastAPI (async/await)** 异步驱动，配合 **SSE (Server-Sent Events)** 技术，将 Agent 的思考过程与结论实时推送到前端。
-
----
-
-## 项目目录结构
+安装依赖：
 
 ```bash
-├── app/                # FastAPI 路由与 Pydantic 模型定义
-├── agents/             # LangGraph 状态机定义与 Prompt 模板
-├── rag/                # FAISS、BM25 混合检索与 Cross-Encoder 重排逻辑
-├── medical_ai/         # MONAI 预处理与 nnU-Net 影像分割接口
-├── core/               # 数据库与缓存配置 (Redis/MySQL)
-├── requirements.txt    # 项目环境依赖
-└── README.md
+pip install -r requirements.txt
 ```
+
+启动后端 API：
+
+```bash
+uvicorn api.main:app --reload
+```
+
+启动 Streamlit 前端：
+
+```bash
+streamlit run app.py
+```
+
+本地手动跑一次 agent：
+
+```bash
+python main.py
+```
+
+手动运行图工作流演示脚本：
+
+```bash
+python scripts/run_graph_demo.py
+```
+
+## 环境变量
+
+主要配置位于 [core/config.py](C:/Users/21204/Desktop/liver-rag/core/config.py:1) 和 `.env`。
+
+常用变量包括：
+
+- `LLM_API_KEY`
+- `LLM_BASE_URL`
+- `LLM_MODEL_NAME`
+- `LIVER_SERVICE_API_KEY`
+- `LIVER_DEFAULT_DICOM_DIR`
+- `LIVER_BACKEND_API_URL`
+- `LIVER_UPLOAD_CACHE_TTL_HOURS`
+
+当未配置 `LLM_API_KEY` 时，部分节点会进入 fallback 模式，仍可用于测试流程、接口和降级逻辑。
+
+## 主要模块
+
+- `api/`：FastAPI 路由、请求响应 schema、上传与 SSE 接口
+- `agents/`：LangGraph 节点、状态定义、路由逻辑
+- `services/`：`LiverSmartAgent` 封装、任务队列、事件总线
+- `rag/`：混合检索、文本清洗、文档预处理
+- `perception/`：医学影像感知逻辑
+- `core/`：配置、数据库、ORM 模型和初始化逻辑
+
+## 当前状态
+
+目前已经完成的后端能力：
+
+- FastAPI 同步与异步咨询接口
+- LangGraph 多节点工作流编排
+- 检索与感知分支的条件路由
+- 节点级 trace、warning、error 输出
+- 后台任务队列
+- SSE 实时事件流
+- 咨询与任务状态持久化
+- 上传缓存与文件复用
+
+## 测试
+
+项目已经预留标准测试目录：
+
+```text
+tests/
+├─ conftest.py
+├─ unit/
+└─ integration/
+```
+
+建议优先补这几类测试：
+
+- `agents` 节点单元测试
+- `graph` 路由与降级测试
+- `api` 接口集成测试
+- `jobs` 异步状态流转测试
+- `SSE` 事件流测试
+
+当前 README 先写入测试规划，测试用例后续补齐。
+
+## 待优化
+
+- 加入多轮审查
+- 补全自动化测试
+- 进一步收敛初始化逻辑与目录职责
+- 清理历史实验文件与遗留注释
+
+## 说明
+
+- `legacy/` 用于暂存旧实现或实验性模块，不属于当前主链路
+- `skills/` 当前仅作为预留目录，不承载主流程代码
+- 文档设计说明见 [`docs/backend-architecture.md`](C:/Users/21204/Desktop/liver-rag/docs/backend-architecture.md:1)

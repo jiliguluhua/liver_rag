@@ -10,7 +10,7 @@ class SystemInitializer:
     # 2. 负责导出预设好的 logic_llm 和 report_llm (供 90% 的场景直接使用)
     # 3. 负责暴露 get_llm 方法 (供 10% 的特殊场景自定义)
     
-    def __init__(self, base_dir="./models", documents_dir="./data/documents", db_path="faiss_index"):
+    def __init__(self, base_dir="./models", documents_dir="./data/documents", db_path=config.DB_PATH):
         self.base_dir = base_dir
         self.documents_dir = documents_dir
         self.db_path = db_path

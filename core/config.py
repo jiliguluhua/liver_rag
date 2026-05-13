@@ -11,9 +11,10 @@ BASE_DIR = str(PROJECT_ROOT)
 DOCUMENTS_DIR = str(PROJECT_ROOT / "data" / "documents")
 MODEL_DIR = str(PROJECT_ROOT / "models")
 RESULT_DIR = str(PROJECT_ROOT / "results")
-DB_PATH = str(PROJECT_ROOT / "faiss_index")
+DB_PATH = str(PROJECT_ROOT / "data" / "faiss_index")
 UPLOADS_DIR = str(PROJECT_ROOT / "data" / "uploads")
 UPLOAD_CACHE_DIR = str(PROJECT_ROOT / "data" / "upload_cache")
+MEDICAL_DICT_PATH = str(PROJECT_ROOT / "data" / "resources" / "medical_dict.txt")
 
 PERCEPTION_MODEL_NAME = "swin_unetr_btcv_segmentation"
 PERCEPTION_MODEL_PATH = os.path.join(MODEL_DIR, PERCEPTION_MODEL_NAME, "models", "model.pt")

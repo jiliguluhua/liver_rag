@@ -44,6 +44,7 @@ class StructuredReport(TypedDict, total=False):
 
 class AgentState(TypedDict, total=False):
     # Request context
+    job_id: str
     session_id: str
     query: str
     image_path: Optional[str]
@@ -87,9 +88,11 @@ def create_initial_state(
     query: str,
     image_path: Optional[str] = None,
     session_id: str = "",
+    job_id: str = "",
     reviewer_enabled: bool = True,
 ) -> AgentState:
     return {
+        "job_id": job_id,
         "session_id": session_id,
         "query": query,
         "image_path": image_path,

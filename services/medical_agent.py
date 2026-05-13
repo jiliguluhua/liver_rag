@@ -19,12 +19,14 @@ class LiverSmartAgent:
         image_path: Optional[str],
         user_query: str,
         *,
+        job_id: Optional[str] = None,
         session_id: Optional[str] = None,
         reviewer_enabled: bool = True,
     ) -> tuple[str, Any, AgentState]:
         initial_state = create_initial_state(
             query=user_query,
             image_path=(image_path or "").strip() or None,
+            job_id=(job_id or "").strip(),
             session_id=(session_id or "").strip() or str(uuid.uuid4()),
             reviewer_enabled=reviewer_enabled,
         )

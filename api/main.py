@@ -29,6 +29,7 @@ from api.schemas import (
 from core import config
 from core.database import SessionLocal, get_db, init_db
 from core.models import ConsultationJobRecord, ConsultationRecord
+from services.job_events import job_event_bus
 from services.job_queue import InMemoryJobQueue
 from services.medical_agent import LiverSmartAgent
 
@@ -185,6 +186,7 @@ def _run_consultation(
     *,
     agent: LiverSmartAgent,
     db: Session,
+    job_id: Optional[str],
     session_id: str,
     query: str,
     image_path: Optional[str],
@@ -193,6 +195,7 @@ def _run_consultation(
     report, preview_img, final_state = agent.run(
         image_path,
         query,
+        job_id=job_id,
         session_id=session_id,
         reviewer_enabled=reviewer_enabled,
     )
@@ -223,11 +226,13 @@ def _process_consultation_job(job_id: str) -> None:
         job.status = "running"
         job.started_at = datetime.utcnow()
         db.commit()
+        job_event_bus.publish(job_id, "job_update", {"job_id": job_id, "status": "running", "message": "Background worker started processing."})
 
         agent: LiverSmartAgent = app.state.agent
         consult_response = _run_consultation(
             agent=agent,
             db=db,
+            job_id=job_id,
             session_id=job.session_id,
             query=job.query,
             image_path=job.image_path,
@@ -247,6 +252,17 @@ def _process_consultation_job(job_id: str) -> None:
         job.consultation_id = consult_response.consultation_id
         job.completed_at = datetime.utcnow()
         db.commit()
+        job_event_bus.publish(
+            job_id,
+            "job_completed",
+            {
+                "job_id": job_id,
+                "status": "completed",
+                "message": "Background worker completed the task.",
+                "result": consult_response.model_dump(mode="json"),
+                "consultation_id": consult_response.consultation_id,
+            },
+        )
     except Exception as exc:
         job = db.get(ConsultationJobRecord, job_id)
         if job is not None:
@@ -254,6 +270,16 @@ def _process_consultation_job(job_id: str) -> None:
             job.error_message = str(exc)
             job.completed_at = datetime.utcnow()
             db.commit()
+            job_event_bus.publish(
+                job_id,
+                "job_failed",
+                {
+                    "job_id": job_id,
+                    "status": "failed",
+                    "message": "Background worker failed.",
+                    "error_message": str(exc),
+                },
+            )
     finally:
         db.close()
 
@@ -313,6 +339,7 @@ def consult(
     return _run_consultation(
         agent=app.state.agent,
         db=db,
+        job_id=None,
         session_id=session_id,
         query=body.query,
         image_path=image_path,
@@ -361,6 +388,7 @@ async def consult_upload(
         consult_response = _run_consultation(
             agent=app.state.agent,
             db=db,
+            job_id=None,
             session_id=active_session_id,
             query=query,
             image_path=image_path,
@@ -496,6 +524,7 @@ def get_job_status(
 async def stream_job_events(job_id: str):
     async def event_generator():
         last_snapshot: Optional[str] = None
+        subscriber = job_event_bus.subscribe(job_id)
         while True:
             db = SessionLocal()
             try:
@@ -518,14 +547,52 @@ async def stream_job_events(job_id: str):
                     last_snapshot = snapshot_json
 
                 if snapshot.status in {"completed", "failed"}:
+                    while not subscriber.empty():
+                        live_event = subscriber.get_nowait()
+                        yield _serialize_sse(live_event.event, live_event.data)
                     return
             finally:
                 db.close()
 
+            while not subscriber.empty():
+                live_event = subscriber.get_nowait()
+                yield _serialize_sse(live_event.event, live_event.data)
+
             yield ": keep-alive\n\n"
             await asyncio.sleep(1.0)
 
-    return StreamingResponse(event_generator(), media_type="text/event-stream")
+    async def wrapped_generator():
+        subscriber = job_event_bus.subscribe(job_id)
+        try:
+            last_snapshot: Optional[str] = None
+            while True:
+                db = SessionLocal()
+                try:
+                    row = db.get(ConsultationJobRecord, job_id)
+                    if row is None:
+                        yield _serialize_sse("error", {"job_id": job_id, "message": "Consultation job not found."})
+                        return
+                    snapshot = _build_job_status_response(row)
+                    snapshot_json = snapshot.model_dump_json()
+                    if snapshot_json != last_snapshot:
+                        event_name = "job_completed" if snapshot.status == "completed" else "job_failed" if snapshot.status == "failed" else "job_update"
+                        yield _serialize_sse(event_name, snapshot.model_dump(mode="json"))
+                        last_snapshot = snapshot_json
+                finally:
+                    db.close()
+
+                while not subscriber.empty():
+                    live_event = subscriber.get_nowait()
+                    yield _serialize_sse(live_event.event, live_event.data)
+
+                if snapshot.status in {"completed", "failed"}:
+                    return
+                yield ": keep-alive\n\n"
+                await asyncio.sleep(1.0)
+        finally:
+            job_event_bus.unsubscribe(job_id, subscriber)
+
+    return StreamingResponse(wrapped_generator(), media_type="text/event-stream")
 
 
 @app.get(

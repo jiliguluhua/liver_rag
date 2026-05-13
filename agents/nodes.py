@@ -7,12 +7,20 @@ from agents.state import AgentState, EvidenceItem, TraceEvent
 from langchain_openai import ChatOpenAI
 from perception.perception import MedicalPerception
 from rag.hybrid_searcher import MedicalHybridSearcher
+from services.job_events import job_event_bus
 
 
 _logic_llm: Optional[ChatOpenAI] = None
 _report_llm: Optional[ChatOpenAI] = None
 _searcher: Optional[MedicalHybridSearcher] = None
 _perception_engine: Optional[MedicalPerception] = None
+
+
+def _emit_job_event(state: AgentState, event: str, **data: Any) -> None:
+    job_id = (state.get("job_id") or "").strip()
+    if not job_id:
+        return
+    job_event_bus.publish(job_id, event, {"job_id": job_id, **data})
 
 
 def _trace(
@@ -145,6 +153,7 @@ def intent_analyzer_node(state: AgentState):
     start_time = time.perf_counter()
     query = state["query"]
     image_path = (state.get("image_path") or "").strip()
+    _emit_job_event(state, "node_update", node="analyzer", status="running", message="Intent analysis started.")
 
     def _trace_message(should_retrieve: bool, should_perceive: bool) -> str:
         if should_retrieve and should_perceive:
@@ -251,6 +260,7 @@ intent=<clinical|education|unrelated>;retrieve=<yes|no>;perceive=<yes|no>
 
 def retrieve_node(state: AgentState):
     start_time = time.perf_counter()
+    _emit_job_event(state, "node_update", node="retriever", status="running", message="Retrieval started.")
     if not state.get("should_retrieve", True):
         return {
             "retrieved_docs": [],
@@ -302,6 +312,7 @@ def retrieve_node(state: AgentState):
 def perception_node(state: AgentState):
     start_time = time.perf_counter()
     image_path = (state.get("image_path") or "").strip()
+    _emit_job_event(state, "node_update", node="perceptor", status="running", message="Perception started.")
 
     if not state.get("should_perceive"):
         return {
@@ -412,6 +423,7 @@ def perception_node(state: AgentState):
 def generate_report_node(state: AgentState):
     start_time = time.perf_counter()
     intent = state.get("intent", "clinical")
+    _emit_job_event(state, "node_update", node="reporter", status="running", message="Report generation started.")
 
     if intent == "unrelated":
         report_text = "This system is designed for medical and liver-case-related questions only."
@@ -517,6 +529,7 @@ Write a concise but clinically careful answer with:
 
 def medical_review_node(state: AgentState):
     start_time = time.perf_counter()
+    _emit_job_event(state, "node_update", node="reviewer", status="running", message="Medical review started.")
 
     if not state.get("reviewer_enabled", True):
         return {

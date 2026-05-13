@@ -301,6 +301,10 @@
     <section class="panel">
       <h2>Job</h2>
       <div id="jobBox" class="mono">No job yet.</div>
+      <div class="result-block">
+        <h3>Stage Status</h3>
+        <div id="stageBox" class="mono">No stage activity yet.</div>
+      </div>
     </section>
 
     <section class="panel">
@@ -335,10 +339,14 @@
     const parallelHintEl = document.getElementById("parallelHint");
     const reportBox = document.getElementById("reportBox");
     const jobBox = document.getElementById("jobBox");
+    const stageBox = document.getElementById("stageBox");
     const warningsBox = document.getElementById("warningsBox");
     const evidenceBox = document.getElementById("evidenceBox");
     const traceBox = document.getElementById("traceBox");
     let activeJobEventSource = null;
+    let liveTraceItems = [];
+    let currentJobStage = "No active stage.";
+    let liveStageState = {};
 
     imageFileEl.addEventListener("change", () => {
       const file = imageFileEl.files[0];
@@ -361,11 +369,15 @@
       parallelHintEl.textContent = "No parallel branch information yet.";
       reportBox.textContent = "No response yet.";
       jobBox.textContent = "No job yet.";
+      stageBox.textContent = "No stage activity yet.";
       warningsBox.textContent = "None.";
       evidenceBox.textContent = "None.";
       traceBox.textContent = "None.";
       previewBox.innerHTML = "No preview yet.";
       closeActiveJobEventSource();
+      liveTraceItems = [];
+      currentJobStage = "No active stage.";
+      liveStageState = {};
     });
 
     analyzeBtn.addEventListener("click", async () => {
@@ -409,6 +421,8 @@
       const submitted = imageFile
         ? await submitUploadJob(backendUrl, query, reviewerEnabled, imageFile)
         : await submitJsonJob(backendUrl, query, imagePath, reviewerEnabled);
+      liveStageState = {};
+      renderStageState();
       renderJob(submitted);
       setStatus("Job submitted. Streaming backend job status...");
       return streamJobUntilFinished(backendUrl, submitted.job_id);
@@ -500,10 +514,31 @@
           setStatus(`Job status: ${job.status || "unknown"}`);
         });
 
+        eventSource.addEventListener("node_update", (event) => {
+          const nodeEvent = JSON.parse(event.data);
+          currentJobStage = `Current stage: ${nodeEvent.node || "node"} | ${nodeEvent.status || "running"} | ${nodeEvent.message || ""}`;
+          liveStageState[nodeEvent.node || "unknown"] = {
+            status: nodeEvent.status || "running",
+            message: nodeEvent.message || "",
+          };
+          renderStageState();
+          pushLiveTrace(nodeEvent);
+          renderJob({
+            job_id: jobId,
+            session_id: "-",
+            status: "running",
+          });
+          setStatus(`${nodeEvent.node || "node"}: ${nodeEvent.status || "running"}`);
+        });
+
         eventSource.addEventListener("job_completed", (event) => {
           const job = JSON.parse(event.data);
-          renderJob(job);
-          finish(resolve, job.result || {});
+          if (job.result) {
+            renderJob(job);
+            finish(resolve, job.result || {});
+          } else {
+            renderJob(job);
+          }
         });
 
         eventSource.addEventListener("job_failed", (event) => {
@@ -571,6 +606,7 @@
         `Job ID: ${job.job_id || "-"}`,
         `Session ID: ${job.session_id || "-"}`,
         `Status: ${job.status || "-"}`,
+        currentJobStage,
       ];
       if (job.consultation_id != null) {
         lines.push(`Consultation ID: ${job.consultation_id}`);
@@ -592,6 +628,10 @@
 
     function renderResult(payload) {
       const trace = payload.trace || [];
+      liveTraceItems = [];
+      currentJobStage = "Current stage: completed";
+      liveStageState = buildStageStateFromTrace(trace);
+      renderStageState();
       parallelHintEl.textContent = usedParallelBranches(trace)
         ? "This run executed retrieval and perception in parallel before report generation."
         : "This run did not use both retrieval and perception parallel branches.";
@@ -653,6 +693,46 @@
         activeJobEventSource.close();
         activeJobEventSource = null;
       }
+    }
+
+    function renderStageState() {
+      const order = ["analyzer", "retriever", "perceptor", "reporter", "reviewer"];
+      const lines = order.map((key) => {
+        const item = liveStageState[key];
+        if (!item) {
+          return `${key}: pending`;
+        }
+        return `${key}: ${item.status}${item.message ? ` | ${item.message}` : ""}`;
+      });
+      stageBox.textContent = lines.join("\n");
+    }
+
+    function buildStageStateFromTrace(trace) {
+      const state = {};
+      for (const item of trace) {
+        if (!item || !item.node) continue;
+        state[item.node] = {
+          status: item.status || "unknown",
+          message: item.message || "",
+        };
+      }
+      return state;
+    }
+
+    function pushLiveTrace(nodeEvent) {
+      liveTraceItems.push({
+        node: nodeEvent.node || "-",
+        status: nodeEvent.status || "-",
+        message: nodeEvent.message || "",
+      });
+      traceBox.innerHTML = liveTraceItems
+        .map((item) => `
+          <div class="trace-item">
+            <strong>${escapeHtml(item.node || "-")}</strong>
+            <div>${escapeHtml(item.status || "-")} | ${escapeHtml(item.message || "")}</div>
+          </div>
+        `)
+        .join("");
     }
   </script>
 </body>

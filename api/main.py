@@ -264,7 +264,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="Liver RAG Agent API",
+    title="Liver RAG Agent",
     version="1.2.0",
     lifespan=lifespan,
 )

@@ -176,6 +176,10 @@ def _poll_job_until_finished(
 
 
 def _render_response(response: dict, preview_placeholder) -> None:
+    trace = response.get("trace", [])
+    if _used_parallel_branches(trace):
+        st.info("This run executed retrieval and perception in parallel before report generation.")
+
     final_report = response.get("report", "")
     st.markdown(final_report)
 
@@ -203,7 +207,6 @@ def _render_response(response: dict, preview_placeholder) -> None:
                 st.markdown(f"**Evidence {idx} | {source}**")
                 st.write(snippet)
 
-    trace = response.get("trace", [])
     if trace:
         with st.expander("Trace"):
             for item in trace:
@@ -219,6 +222,11 @@ def _render_response(response: dict, preview_placeholder) -> None:
             "image": preview_img,
         }
     )
+
+
+def _used_parallel_branches(trace: list[dict]) -> bool:
+    completed_nodes = {item.get("node") for item in trace if item.get("status") == "completed"}
+    return "retriever" in completed_nodes and "perceptor" in completed_nodes
 
 
 if "messages" not in st.session_state:

@@ -293,6 +293,7 @@
 
       <div class="result-block">
         <h3>Response</h3>
+        <div id="parallelHint" class="meta">No parallel branch information yet.</div>
         <div id="reportBox" class="mono">No response yet.</div>
       </div>
     </section>
@@ -331,6 +332,7 @@
     const clearBtn = document.getElementById("clearBtn");
     const statusBox = document.getElementById("statusBox");
     const previewBox = document.getElementById("previewBox");
+    const parallelHintEl = document.getElementById("parallelHint");
     const reportBox = document.getElementById("reportBox");
     const jobBox = document.getElementById("jobBox");
     const warningsBox = document.getElementById("warningsBox");
@@ -355,6 +357,7 @@
       asyncModeEl.checked = true;
       uploadMetaEl.textContent = "No file selected. The backend will use path mode.";
       setStatus("Ready.");
+      parallelHintEl.textContent = "No parallel branch information yet.";
       reportBox.textContent = "No response yet.";
       jobBox.textContent = "No job yet.";
       warningsBox.textContent = "None.";
@@ -541,6 +544,10 @@
     }
 
     function renderResult(payload) {
+      const trace = payload.trace || [];
+      parallelHintEl.textContent = usedParallelBranches(trace)
+        ? "This run executed retrieval and perception in parallel before report generation."
+        : "This run did not use both retrieval and perception parallel branches.";
       reportBox.textContent = payload.report || "No report.";
 
       const warnings = payload.warnings || [];
@@ -556,7 +563,6 @@
           `).join("")
         : "None.";
 
-      const trace = payload.trace || [];
       traceBox.innerHTML = trace.length
         ? trace.map((item) => `
             <div class="trace-item">
@@ -584,6 +590,15 @@
 
     function sleep(ms) {
       return new Promise((resolve) => window.setTimeout(resolve, ms));
+    }
+
+    function usedParallelBranches(trace) {
+      const completedNodes = new Set(
+        trace
+          .filter((item) => item && item.status === "completed")
+          .map((item) => item.node)
+      );
+      return completedNodes.has("retriever") && completedNodes.has("perceptor");
     }
   </script>
 </body>

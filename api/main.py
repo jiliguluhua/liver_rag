@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import hashlib
@@ -13,7 +14,7 @@ from typing import Annotated, Optional
 
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 from PIL import Image
 from sqlalchemy.orm import Session
 
@@ -173,6 +174,11 @@ def _build_job_status_response(row: ConsultationJobRecord) -> JobStatusResponse:
         completed_at=row.completed_at,
         result=result,
     )
+
+
+def _serialize_sse(event: str, data: dict) -> str:
+    payload = json.dumps(data, ensure_ascii=False)
+    return f"event: {event}\ndata: {payload}\n\n"
 
 
 def _run_consultation(
@@ -480,6 +486,46 @@ def get_job_status(
     if row is None:
         raise HTTPException(status_code=404, detail="Consultation job not found.")
     return _build_job_status_response(row)
+
+
+@app.get(
+    "/v1/jobs/{job_id}/events",
+    tags=["jobs"],
+    dependencies=[Depends(_optional_service_auth)],
+)
+async def stream_job_events(job_id: str):
+    async def event_generator():
+        last_snapshot: Optional[str] = None
+        while True:
+            db = SessionLocal()
+            try:
+                row = db.get(ConsultationJobRecord, job_id)
+                if row is None:
+                    yield _serialize_sse(
+                        "error",
+                        {
+                            "job_id": job_id,
+                            "message": "Consultation job not found.",
+                        },
+                    )
+                    return
+
+                snapshot = _build_job_status_response(row)
+                snapshot_json = snapshot.model_dump_json()
+                if snapshot_json != last_snapshot:
+                    event_name = "job_completed" if snapshot.status == "completed" else "job_failed" if snapshot.status == "failed" else "job_update"
+                    yield _serialize_sse(event_name, snapshot.model_dump(mode="json"))
+                    last_snapshot = snapshot_json
+
+                if snapshot.status in {"completed", "failed"}:
+                    return
+            finally:
+                db.close()
+
+            yield ": keep-alive\n\n"
+            await asyncio.sleep(1.0)
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
 @app.get(

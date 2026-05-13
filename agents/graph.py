@@ -24,9 +24,13 @@ def create_medical_graph():
     def route_after_analyzer(state: AgentState):
         if state.get("intent") == "unrelated":
             return "reporter"
-        if state.get("should_retrieve", True):
+        should_retrieve = state.get("should_retrieve", True)
+        should_perceive = state.get("should_perceive", False)
+        if should_retrieve and should_perceive:
+            return ["retriever", "perceptor"]
+        if should_retrieve:
             return "retriever"
-        if state.get("should_perceive", False):
+        if should_perceive:
             return "perceptor"
         return "reporter"
 
@@ -40,20 +44,7 @@ def create_medical_graph():
         },
     )
 
-    def route_after_retriever(state: AgentState):
-        if state.get("should_perceive", False):
-            return "perceptor"
-        return "reporter"
-
-    workflow.add_conditional_edges(
-        "retriever",
-        route_after_retriever,
-        {
-            "perceptor": "perceptor",
-            "reporter": "reporter",
-        },
-    )
-
+    workflow.add_edge("retriever", "reporter")
     workflow.add_edge("perceptor", "reporter")
 
     def route_after_reporter(state: AgentState):

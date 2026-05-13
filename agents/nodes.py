@@ -146,19 +146,31 @@ def intent_analyzer_node(state: AgentState):
     query = state["query"]
     image_path = (state.get("image_path") or "").strip()
 
+    def _trace_message(should_retrieve: bool, should_perceive: bool) -> str:
+        if should_retrieve and should_perceive:
+            return "Intent analysis completed. Retrieval and perception were scheduled as parallel branches."
+        if should_retrieve:
+            return "Intent analysis completed. Retrieval branch was scheduled."
+        if should_perceive:
+            return "Intent analysis completed. Perception branch was scheduled."
+        return "Intent analysis completed. Report generation can continue directly."
+
     if not config.LLM_API_KEY:
+        should_retrieve = True
+        should_perceive = bool(image_path)
         return {
             "intent": "clinical",
-            "should_retrieve": True,
-            "should_perceive": bool(image_path),
+            "should_retrieve": should_retrieve,
+            "should_perceive": should_perceive,
             "workflow_status": "running",
             "warnings": ["LLM_API_KEY is not configured; intent classification fell back to rule-based defaults."],
             "trace": [
                 _trace(
                     "analyzer",
                     "completed",
-                    "Fell back to default routing because no LLM API key is configured.",
+                    _trace_message(should_retrieve, should_perceive),
                     start_time=start_time,
+                    metadata={"routing_mode": "fallback"},
                 )
             ],
         }
@@ -207,7 +219,7 @@ intent=<clinical|education|unrelated>;retrieve=<yes|no>;perceive=<yes|no>
                 _trace(
                     "analyzer",
                     "completed",
-                    "Intent analysis completed.",
+                    _trace_message(should_retrieve, should_perceive),
                     start_time=start_time,
                     metadata={
                         "intent": intent,

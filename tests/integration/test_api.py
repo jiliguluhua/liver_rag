@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+from datetime import datetime
+
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from api import main as api_main
 from core.database import Base
-from core.models import ConsultationJobRecord
+from core.models import ConsultationJobRecord, ConsultationRecord
 
 
 class DummyQueue:
@@ -189,3 +191,155 @@ def test_submit_upload_job_persists_warning_and_queues_task(monkeypatch, tmp_pat
         assert row.image_path is not None
     finally:
         db.close()
+
+
+def test_get_job_status_returns_404_for_missing_job(monkeypatch, tmp_path):
+    client, _session = _make_client(monkeypatch, tmp_path)
+
+    response = client.get("/v1/jobs/missing-job-id")
+
+    assert response.status_code == 404
+
+
+def test_get_job_status_returns_completed_result(monkeypatch, tmp_path):
+    client, TestingSessionLocal = _make_client(monkeypatch, tmp_path)
+
+    db = TestingSessionLocal()
+    try:
+        row = ConsultationJobRecord(
+            id="job-123",
+            session_id="session-1",
+            query="状态查询",
+            image_path=None,
+            reviewer_enabled=True,
+            status="completed",
+            report="done",
+            preview_image_base64=None,
+            intent="clinical",
+            perception_status="skipped",
+            warnings_json='["warn"]',
+            errors_json="[]",
+            evidence_json="[]",
+            trace_json="[]",
+            consultation_id=10,
+            created_at=datetime.utcnow(),
+            completed_at=datetime.utcnow(),
+        )
+        db.add(row)
+        db.commit()
+    finally:
+        db.close()
+
+    response = client.get("/v1/jobs/job-123")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["job_id"] == "job-123"
+    assert payload["status"] == "completed"
+    assert payload["result"]["report"] == "done"
+
+
+def test_list_consultations_supports_session_filter(monkeypatch, tmp_path):
+    client, TestingSessionLocal = _make_client(monkeypatch, tmp_path)
+
+    db = TestingSessionLocal()
+    try:
+        db.add_all(
+            [
+                ConsultationRecord(
+                    session_id="session-a",
+                    query="query-a",
+                    report="report-a",
+                    image_path=None,
+                    has_preview=False,
+                ),
+                ConsultationRecord(
+                    session_id="session-b",
+                    query="query-b",
+                    report="report-b",
+                    image_path=None,
+                    has_preview=False,
+                ),
+            ]
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    response = client.get("/v1/consultations", params={"session_id": "session-a"})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert len(payload) == 1
+    assert payload[0]["session_id"] == "session-a"
+
+
+def test_get_consultation_returns_record_detail(monkeypatch, tmp_path):
+    client, TestingSessionLocal = _make_client(monkeypatch, tmp_path)
+
+    db = TestingSessionLocal()
+    try:
+        row = ConsultationRecord(
+            session_id="session-detail",
+            query="detail-query",
+            report="detail-report",
+            image_path="/tmp/scan.nii.gz",
+            has_preview=False,
+        )
+        db.add(row)
+        db.commit()
+        db.refresh(row)
+        consultation_id = row.id
+    finally:
+        db.close()
+
+    response = client.get(f"/v1/consultations/{consultation_id}")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["id"] == consultation_id
+    assert payload["query"] == "detail-query"
+    assert payload["report"] == "detail-report"
+
+
+def test_consult_requires_api_key_when_configured(monkeypatch, tmp_path):
+    client, _session = _make_client(monkeypatch, tmp_path)
+    monkeypatch.setattr(api_main.config, "SERVICE_API_KEY", "secret-key")
+
+    response = client.post(
+        "/v1/consult",
+        json={"query": "需要鉴权"},
+    )
+
+    assert response.status_code == 401
+
+
+def test_consult_accepts_valid_api_key_when_configured(monkeypatch, tmp_path):
+    client, _session = _make_client(monkeypatch, tmp_path)
+    monkeypatch.setattr(api_main.config, "SERVICE_API_KEY", "secret-key")
+
+    def fake_run_consultation(**kwargs):
+        return api_main.ConsultResponse(
+            report="authorized report",
+            preview_image_base64=None,
+            consultation_id=2,
+            session_id=kwargs["session_id"],
+            status="completed",
+            intent="clinical",
+            perception_status="skipped",
+            warnings=[],
+            errors=[],
+            evidence=[],
+            trace=[],
+        )
+
+    monkeypatch.setattr(api_main, "_run_consultation", fake_run_consultation)
+
+    response = client.post(
+        "/v1/consult",
+        headers={"X-API-Key": "secret-key"},
+        json={"query": "带鉴权访问"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["report"] == "authorized report"

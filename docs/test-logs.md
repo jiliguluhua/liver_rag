@@ -16,7 +16,12 @@ Current coverage:
 
 - Unit: `agents.nodes` fallback, skip, placeholder, guardrail, and review-disable paths
 - Unit: `services.job_events.JobEventBus`
+- Unit: `agents.graph` routing branches
 - Integration: `/health`, `/v1/consult`, `/v1/jobs`
+- Integration: `/v1/consult/upload`, `/v1/jobs/upload`
+- Integration: `/v1/jobs/{job_id}`
+- Integration: `/v1/consultations`, `/v1/consultations/{consultation_id}`
+- Integration: API key auth on protected endpoints
 
 Notes:
 

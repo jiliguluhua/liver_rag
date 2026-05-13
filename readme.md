@@ -11,6 +11,11 @@
 - 报告生成与单轮医学审查（待改进）
 - 咨询记录持久化
 
+## 文档导航
+
+- api接口说明见 [`docs/api_documention.md`](C:/Users/21204/Desktop/liver-rag/docs/api_documention.md:1)
+- 后端设计说明见 [`docs/backend_architecture.md`](C:/Users/21204/Desktop/liver-rag/docs/backend_architecture.md:1)
+
 ## 项目结构
 
 ```text
@@ -101,6 +106,7 @@ python scripts/run_graph_demo.py
 - `rag/`：混合检索、文本清洗、文档预处理
 - `perception/`：医学影像感知逻辑
 - `core/`：配置、数据库、ORM 模型和初始化逻辑
+- `tests/`：测试
 
 ## 当前状态
 
@@ -114,10 +120,11 @@ python scripts/run_graph_demo.py
 - SSE 实时事件流
 - 咨询与任务状态持久化
 - 上传缓存与文件复用
+- 已完成基础测试
 
 ## 测试
 
-项目已经预留标准测试目录：
+项目已经包含标准测试目录：
 
 ```text
 tests/
@@ -126,15 +133,29 @@ tests/
 └─ integration/
 ```
 
-将会优先补这几类测试：
+当前已覆盖的测试包括：
 
-- `agents` 节点单元测试
-- `graph` 路由与降级测试
-- `api` 接口集成测试
-- `jobs` 异步状态流转测试
-- `SSE` 事件流测试
+- agents.nodes 节点的 fallback、skip、placeholder、guardrail 和 reviewer disable 分支
+- agents.graph 路由分支测试
+- services.job_events.JobEventBus
+- /health 接口
+- /v1/consult
+- /v1/jobs
+- /v1/consult/upload
+- /v1/jobs/upload
+- /v1/jobs/{job_id}
+- /v1/jobs/{job_id}/events
+- /v1/consultations
+- /v1/consultations/{consultation_id}
+- API Key 鉴权测试
 
-当前 README 先写入测试规划，测试用例后续补齐。
+运行测试：
+
+```bash
+pytest tests
+```
+
+测试记录见：[docs/test_logs.md](C:/Users/21204/Desktop/liver-rag/docs/test_logs.md:1)
 
 ## 待优化
 
@@ -146,4 +167,7 @@ tests/
 
 - `legacy/` 用于暂存旧实现或实验性模块，不属于当前主链路
 - `skills/` 当前仅作为预留目录，不承载主流程代码
-- 后端设计说明见 [`docs/backend-architecture.md`](C:/Users/21204/Desktop/liver-rag/docs/backend-architecture.md:1)
+
+```
+
+```

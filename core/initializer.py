@@ -2,7 +2,7 @@ import os
 from langchain_openai import ChatOpenAI
 from monai.bundle import download
 import core.config as config
-from skills.document_processor import DocumentProcessor
+from rag.document_processor import DocumentProcessor
 from perception.perception import MedicalPerception
 
 class SystemInitializer:

@@ -5,7 +5,7 @@ from langchain_community.document_loaders import PyMuPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
-from skills.text_cleaner import MedicalTextCleaner
+from rag.text_cleaner import MedicalTextCleaner
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 import core.config as config
 

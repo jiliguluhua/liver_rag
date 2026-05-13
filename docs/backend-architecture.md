@@ -1,44 +1,28 @@
-# Liver RAG 后端架构
-
-这份文档用于说明项目当前的后端架构设计，采用 `Markdown + Mermaid` 方式绘制，可直接在支持 Mermaid 的 Markdown 预览器中显示。
-
 ## 1. 系统总览
 
 ```mermaid
 flowchart LR
-    User[用户]
-    Streamlit[Streamlit 演示前端]
-    StaticUI[web/index.html 调试页]
+    User[用户 / 调用方]
+    Frontend[前端界面<br/>Streamlit / index.html]
     API[FastAPI 接口层]
-    Auth[API Key 鉴权]
-    Input[影像输入处理<br/>路径或 .nii.gz 上传]
-    JobQueue[内存任务队列]
-    Worker[后台 Worker]
-    Agent[LiverSmartAgent]
-    Graph[LangGraph 工作流]
-    Retrieval[混合检索<br/>FAISS + BM25]
-    Perception[医学感知模块<br/>MONAI / SwinUNETR]
+    TaskSystem[任务系统<br/>队列 / Worker / SSE]
+    Agent[Agent 工作流]
+    Reasoning[检索与感知<br/>FAISS / BM25 / MONAI]
     LLM[LLM 服务]
     DB[(SQLite 数据库)]
 
-    User --> Streamlit
-    User --> StaticUI
+    User --> Frontend
     User --> API
-    Streamlit --> API
-    StaticUI --> API
-    API --> Auth
-    API --> Input
+    Frontend --> API
     API --> DB
+    API --> TaskSystem
     API --> Agent
-    API --> JobQueue
-    Input --> Agent
-    JobQueue --> Worker
-    Worker --> Agent
-    Agent --> Graph
-    Graph --> Retrieval
-    Graph --> Perception
-    Graph --> LLM
-    Worker --> DB
+    TaskSystem --> Agent
+    TaskSystem --> Frontend
+    Agent --> Reasoning
+    Agent --> LLM
+    Reasoning --> DB
+    Agent --> DB
 ```
 
 ## 2. 请求模式
@@ -51,20 +35,22 @@ flowchart TD
     B -->|POST /v1/jobs| E[异步任务提交]
     B -->|POST /v1/jobs/upload| F[异步上传任务提交]
     B -->|GET /v1/jobs/:job_id| G[查询任务状态]
-    B -->|GET /v1/consultations| H[查询历史咨询记录]
+    B -->|GET /v1/jobs/:job_id/events| H[订阅任务事件流]
+    B -->|GET /v1/consultations| I[查询历史咨询记录]
 
-    C --> I[直接执行 Agent]
-    D --> J[保存上传文件并复用缓存]
-    J --> I
+    C --> J[直接执行 Agent]
+    D --> K[保存上传文件并复用缓存]
+    K --> J
 
-    E --> K[将任务持久化为 queued]
-    F --> L[保存上传内容并持久化任务]
-    L --> M[将 job_id 放入队列]
-    K --> M
-    M --> N[后台 Worker 执行任务]
+    E --> L[将任务持久化为 queued]
+    F --> M[保存上传内容并持久化任务]
+    L --> N[放入队列]
+    M --> N
+    N --> O[后台 Worker 执行任务]
 
-    G --> O[读取任务状态与结果快照]
-    H --> P[读取历史 consultation 记录]
+    G --> P[读取任务状态与结果快照]
+    H --> Q[实时接收 job 与节点事件]
+    I --> R[读取 consultation 历史]
 ```
 
 ## 3. 同步咨询链路
@@ -81,8 +67,8 @@ sequenceDiagram
     API->>API: 校验请求，解析 session_id / image_path
     API->>Agent: run(image_path, query, session_id, reviewer_enabled)
     Agent->>Graph: invoke(initial_state)
-    Graph-->>Agent: 返回 final_state + preview_image + report
-    Agent-->>API: 返回 report, preview_img, final_state
+    Graph-->>Agent: 返回 report + preview + trace
+    Agent-->>API: 返回咨询结果
     API->>DB: 写入 consultation 记录
     DB-->>API: 返回 consultation_id
     API-->>Client: 返回 ConsultResponse
@@ -97,6 +83,8 @@ sequenceDiagram
     participant DB as SQLite
     participant Queue as InMemoryJobQueue
     participant Worker as 后台 Worker
+    participant Bus as JobEventBus
+    participant SSE as SSE 接口
     participant Agent as LiverSmartAgent
 
     Client->>API: POST /v1/jobs
@@ -104,18 +92,20 @@ sequenceDiagram
     API->>Queue: submit(job_id)
     API-->>Client: 202 Accepted + job_id
 
-    Worker->>Queue: 获取下一个任务
-    Queue-->>Worker: 发送 job_id
-    Worker->>DB: 将任务状态改为 running
-    Worker->>Agent: 执行咨询工作流
-    Agent-->>Worker: 返回 report, preview, trace, evidence
-    Worker->>DB: 写入 consultation 记录
-    Worker->>DB: 更新 job 为 completed，并保存结果snapshot
+    Client->>SSE: GET /v1/jobs/:job_id/events
+    SSE-->>Client: 建立事件流连接
 
-    Client->>API: GET /v1/jobs/:job_id
-    API->>DB: 查询 job 记录
-    DB-->>API: 返回任务状态与结果
-    API-->>Client: 返回 JobStatusResponse
+    Worker->>Queue: 获取下一个任务
+    Queue-->>Worker: 返回 job_id
+    Worker->>DB: 更新 job 为 running
+    Worker->>Bus: 发布 job_update
+    Worker->>Agent: 执行咨询工作流
+    Agent-->>Worker: 返回 report, preview, trace
+    Worker->>DB: 写入 consultation 记录
+    Worker->>DB: 更新 job 为 completed
+    Worker->>Bus: 发布 job_completed
+    Bus-->>SSE: 推送 job / node 事件
+    SSE-->>Client: 实时更新任务状态
 ```
 
 ## 5. 上传与缓存链路
@@ -140,14 +130,14 @@ flowchart TD
 flowchart TD
     Start([开始]) --> Analyzer[意图分析节点]
 
-    Analyzer -->|unrelated| Reporter[报告生成节点]
-    Analyzer -->|should_retrieve| Retriever[检索节点]
-    Analyzer -->|perception only| Perceptor[感知节点]
-    Analyzer -->|direct answer| Reporter
+    Analyzer -->|无关问题| Reporter[报告生成节点]
+    Analyzer -->|仅检索| Retriever[检索节点]
+    Analyzer -->|仅感知| Perceptor[感知节点]
+    Analyzer -->|两者都需要| Retriever
+    Analyzer -->|两者都需要| Perceptor
+    Analyzer -->|直接回答| Reporter
 
-    Retriever -->|should_perceive| Perceptor
-    Retriever -->|text only| Reporter
-
+    Retriever --> Reporter
     Perceptor --> Reporter
     Reporter --> Reviewer{是否开启 Reviewer}
     Reviewer -->|是| ReviewNode[医学审核节点]
@@ -155,7 +145,37 @@ flowchart TD
     ReviewNode --> End
 ```
 
-## 7. 持久化模型（仅展示核心字段）
+这一步的关键点是：
+
+- 先由 `analyzer` 判断是否需要检索、是否需要感知
+- 只有当两者都需要时，`retriever` 和 `perceptor` 才并行执行
+- 二者完成后再汇总进入 `reporter`
+
+## 7. SSE 事件流模型
+
+```mermaid
+flowchart TD
+    A[后台任务执行] --> B[发布 job_update]
+    A --> C[发布 node_update]
+    A --> D[发布 job_completed / job_failed]
+    B --> E[JobEventBus]
+    C --> E
+    D --> E
+    E --> F[SSE 任务事件接口]
+    F --> G[前端 Job 面板]
+    F --> H[前端 Stage Status]
+    F --> I[前端 Trace 实时更新]
+    F --> J[Streamlit 状态展示]
+```
+
+当前前端能实时看到的内容包括：
+
+- job 总体状态
+- 当前正在执行的节点
+- 各节点状态面板
+- trace 流式更新
+
+## 8. 持久化模型（仅展示核心字段）
 
 ```mermaid
 erDiagram

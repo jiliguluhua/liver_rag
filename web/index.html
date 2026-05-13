@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>LiverSmart Demo</title>
+  <title>LiverSmart</title>
   <style>
     :root {
       --bg: #eef3f8;
@@ -234,7 +234,7 @@
 <body>
   <div class="page">
     <section class="hero">
-      <h1>LiverSmart Demo</h1>
+      <h1>LiverSmart</h1>
       <p>Simple browser UI for the FastAPI backend. You can submit a local NIfTI path or upload a single .nii.gz file.</p>
     </section>
 
@@ -338,6 +338,7 @@
     const warningsBox = document.getElementById("warningsBox");
     const evidenceBox = document.getElementById("evidenceBox");
     const traceBox = document.getElementById("traceBox");
+    let activeJobEventSource = null;
 
     imageFileEl.addEventListener("change", () => {
       const file = imageFileEl.files[0];
@@ -364,6 +365,7 @@
       evidenceBox.textContent = "None.";
       traceBox.textContent = "None.";
       previewBox.innerHTML = "No preview yet.";
+      closeActiveJobEventSource();
     });
 
     analyzeBtn.addEventListener("click", async () => {
@@ -408,8 +410,8 @@
         ? await submitUploadJob(backendUrl, query, reviewerEnabled, imageFile)
         : await submitJsonJob(backendUrl, query, imagePath, reviewerEnabled);
       renderJob(submitted);
-      setStatus("Job submitted. Polling backend job status...");
-      return pollJobUntilFinished(backendUrl, submitted.job_id);
+      setStatus("Job submitted. Streaming backend job status...");
+      return streamJobUntilFinished(backendUrl, submitted.job_id);
     }
 
     async function sendJsonRequest(backendUrl, query, imagePath, reviewerEnabled) {
@@ -476,6 +478,51 @@
         headers: requestHeaders(),
       });
       return handleResponse(response);
+    }
+
+    async function streamJobUntilFinished(backendUrl, jobId) {
+      closeActiveJobEventSource();
+      return new Promise((resolve, reject) => {
+        const eventSource = new EventSource(`${backendUrl}/v1/jobs/${jobId}/events`);
+        activeJobEventSource = eventSource;
+        let settled = false;
+
+        const finish = (fn, value) => {
+          if (settled) return;
+          settled = true;
+          closeActiveJobEventSource();
+          fn(value);
+        };
+
+        eventSource.addEventListener("job_update", (event) => {
+          const job = JSON.parse(event.data);
+          renderJob(job);
+          setStatus(`Job status: ${job.status || "unknown"}`);
+        });
+
+        eventSource.addEventListener("job_completed", (event) => {
+          const job = JSON.parse(event.data);
+          renderJob(job);
+          finish(resolve, job.result || {});
+        });
+
+        eventSource.addEventListener("job_failed", (event) => {
+          const job = JSON.parse(event.data);
+          renderJob(job);
+          finish(reject, new Error(job.error_message || "Async job failed."));
+        });
+
+        eventSource.addEventListener("error", async () => {
+          closeActiveJobEventSource();
+          try {
+            setStatus("SSE disconnected. Falling back to polling...", "warn");
+            const result = await pollJobUntilFinished(backendUrl, jobId);
+            finish(resolve, result);
+          } catch (error) {
+            finish(reject, error);
+          }
+        });
+      });
     }
 
     async function pollJobUntilFinished(backendUrl, jobId) {
@@ -599,6 +646,13 @@
           .map((item) => item.node)
       );
       return completedNodes.has("retriever") && completedNodes.has("perceptor");
+    }
+
+    function closeActiveJobEventSource() {
+      if (activeJobEventSource) {
+        activeJobEventSource.close();
+        activeJobEventSource = null;
+      }
     }
   </script>
 </body>

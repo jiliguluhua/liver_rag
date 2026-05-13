@@ -1,6 +1,6 @@
-# Liver RAG Backend
+# Liver RAG
 
-一个面向肝病场景的医疗决策支持后端原型，结合了 LangGraph 工作流编排、RAG 检索、医学影像感知、异步任务和 SSE 事件流。
+一个面向肝病的医疗决策支持系统，集成 LangGraph 工作流、RAG 检索与医学影像感知，并通过异步任务、SSE 实时事件和文件缓存实现高性能、可追溯的后端执行与状态管理。
 
 当前系统支持：
 
@@ -8,7 +8,7 @@
 - 异步任务提交与状态查询
 - `.nii.gz` 影像上传与缓存复用
 - 检索与感知并行分支
-- 报告生成与单轮医学审查
+- 报告生成与单轮医学审查（待改进）
 - 咨询记录持久化
 
 ## 项目结构
@@ -26,7 +26,6 @@ liver-rag/
 ├─ models/       # Local model weights and configs
 ├─ perception/   # Medical perception logic
 ├─ rag/          # Retrieval and preprocessing modules
-├─ results/      # Generated outputs and intermediate artifacts
 ├─ scripts/      # Manual utilities and demo runners
 ├─ services/     # Agent wrapper, queue, and event bus
 ├─ skills/       # Reserved placeholder for helper modules
@@ -39,7 +38,7 @@ liver-rag/
 系统主流程由 [`agents/graph.py`](C:/Users/21204/Desktop/liver-rag/agents/graph.py:1) 编排：
 
 1. `analyzer` 判断意图，并决定是否进入检索分支和感知分支
-2. `retriever` 从知识库召回证据
+2. `retriever` 从知识库检索语料证据
 3. `perceptor` 读取影像并执行感知，失败时自动降级
 4. `reporter` 汇总证据与感知结果生成报告
 5. `reviewer` 对生成结果做医学审查
@@ -72,7 +71,7 @@ streamlit run app.py
 python main.py
 ```
 
-手动运行图工作流演示脚本：
+手动运行graph工作流演示脚本：
 
 ```bash
 python scripts/run_graph_demo.py
@@ -127,7 +126,7 @@ tests/
 └─ integration/
 ```
 
-建议优先补这几类测试：
+将会优先补这几类测试：
 
 - `agents` 节点单元测试
 - `graph` 路由与降级测试
@@ -148,4 +147,4 @@ tests/
 
 - `legacy/` 用于暂存旧实现或实验性模块，不属于当前主链路
 - `skills/` 当前仅作为预留目录，不承载主流程代码
-- 文档设计说明见 [`docs/backend-architecture.md`](C:/Users/21204/Desktop/liver-rag/docs/backend-architecture.md:1)
+- 后端设计说明见 [`docs/backend-architecture.md`](C:/Users/21204/Desktop/liver-rag/docs/backend-architecture.md:1)

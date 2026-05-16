@@ -1,16 +1,21 @@
 # Liver RAG
 
-一个面向肝病场景的医疗决策支持系统，集成 LangGraph 工作流、RAG 检索与医学影像感知，并通过异步任务、SSE 实时事件、可切换的 Redis pub/sub 事件分发与文件缓存实现可追溯的后端执行与状态管理。
+一个面向肝病场景的医疗决策支持系统，支持多轮 intake 信息采集、医学影像辅助分析与结构化报告生成。
+
+后端基于 LangGraph、RAG 与医学影像感知构建，并结合异步任务、SSE 实时事件、Redis 与文件缓存实现可追溯的执行与状态管理。
 
 当前系统支持：
 
-- 统一咨询入口，支持 `auto`、`sync`、`async` 三种提交模式
+- 多轮 intake 信息采集与显式“生成报告”两阶段交互
 - 同步咨询接口
 - 异步任务提交与状态查询
 - `.nii.gz` 影像上传与缓存复用
+- 基于 `session_id` 的会话上下文管理
+- Redis 会话上下文缓存与 intake 历史恢复
 - 检索与感知并行分支
-- 报告生成与单轮医学审查
-- 咨询记录持久化
+- 报告生成与单轮医学审查（待改进）
+- 咨询记录与 intake 记录持久化
+- SSE 实时事件流
 
 ## 文档导航
 
@@ -40,13 +45,13 @@ liver-rag/
 
 ## 核心流程
 
-系统主流程由 [agents/graph.py](C:/Users/21204/Desktop/liver-rag/agents/graph.py:1) 编排：
+系统主流程由 [agents/graph.py](C:/Users/21204/Desktop/liver-rag/agents/graph.py:1) 编排，采用“两阶段”流程：
 
-1. `analyzer` 判断意图，并决定是否进入检索分支和感知分支
-2. `retriever` 从知识库检索语料证据
-3. `perceptor` 读取影像并执行感知，失败时自动降级
-4. `reporter` 汇总证据与感知结果生成报告
-5. `reviewer` 对生成结果做医学审查
+1. `collect / intake` 阶段：先记录用户本轮输入，结合会话上下文提炼已知信息，并生成后续追问建议
+2. 用户可在任意时刻继续补充信息，也可显式点击“生成报告”
+3. `report` 阶段：正式进入 LangGraph 工作流，执行意图分析、检索、感知、报告生成与审查
+4. 异步任务模式下，后台 worker 处理任务，事件总线通过内存版或 Redis pub/sub 分发 job / node 事件
+5. 会话上下文优先从 Redis 读取，Redis miss 时可由数据库中的 intake 记录与咨询记录恢复
 
 API 层由 [api/main.py](C:/Users/21204/Desktop/liver-rag/api/main.py:1) 提供，对外暴露统一 `dispatch` 入口、同步接口、异步任务接口、上传接口、历史记录和 SSE 能力。
 
@@ -108,8 +113,16 @@ python scripts/run_graph_demo.py
 - `LIVER_BACKEND_API_URL`
 - `LIVER_UPLOAD_CACHE_TTL_HOURS`
 - `LIVER_REDIS_URL`
+- `LIVER_REDIS_SESSION_CONTEXT_TTL_SECONDS`
+- `LIVER_SESSION_CONTEXT_MAX_TURNS`
 
 当未配置 `LLM_API_KEY` 时，部分节点会进入 fallback 模式，仍可用于测试流程、接口和降级逻辑。
+
+另外：
+
+- `LIVER_REDIS_URL` 用于启用 Redis 能力，包括任务事件 pub/sub、job 状态缓存、检索缓存与会话上下文缓存
+- `LIVER_SESSION_CONTEXT_MAX_TURNS` 用于控制单个 session 保留的最近上下文轮数
+- `LIVER_REDIS_SESSION_CONTEXT_TTL_SECONDS` 用于控制 Redis 中 session context 的过期时间
 
 ## 主要模块
 
@@ -127,16 +140,21 @@ python scripts/run_graph_demo.py
 
 目前已经完成的后端能力：
 
-- FastAPI 同步、异步与 dispatch 咨询接口
+目前已经完成的后端能力包括：
+
+- FastAPI 同步与异步咨询接口
+- 多轮 intake 与显式报告生成两阶段交互
+- 基于 `session_id` 的会话串联
 - LangGraph 多节点工作流编排
 - 检索与感知分支的条件路由
-- 共享 analyzer 驱动的同步/异步自动分流
 - 节点级 trace、warning、error 输出
 - 后台任务队列
 - SSE 实时事件流
-- 咨询与任务状态持久化
+- Redis pub/sub 任务事件分发
+- Redis 会话上下文缓存
+- intake 记录、咨询记录与任务状态持久化
 - 上传缓存与文件复用
-- 已完成基础测试
+- 基础自动化测试
 
 ## 测试
 

@@ -46,6 +46,21 @@ Notes:
 - `deselected` means 12 tests were intentionally not run because the `-k` filter only selected matching cases; this is not an error.
 - Warnings included `pkg_resources` / `Setuptools<81` related output and did not fail the test run.
 
+Command:
+
+```bash
+pytest tests/integration/test_api.py -k "collect_endpoint or report_endpoint or persists_turns"
+```
+
+Result:
+
+- Passed: `3 passed, 19 deselected, 15 warnings in 8.25s`
+
+Notes:
+
+- This run covered the new intake / report flow and session-context persistence behavior.
+- `deselected` means the remaining tests in `test_api.py` were intentionally filtered out and not executed.
+
 ## 2026-05-16 Dispatch Update
 
 Command:

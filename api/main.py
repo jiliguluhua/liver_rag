@@ -32,7 +32,7 @@ from api.schemas import (
 from core import config
 from core.database import SessionLocal, get_db, init_db
 from core.models import ConsultationJobRecord, ConsultationRecord
-from agents.nodes import analyze_intent_routing
+from agents.routing import analyze_intent_routing
 from services.job_events import job_event_bus
 from services.job_queue import InMemoryJobQueue
 from services.medical_agent import LiverSmartAgent

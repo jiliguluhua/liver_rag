@@ -42,6 +42,15 @@ class StructuredReport(TypedDict, total=False):
     evidence: list[EvidenceItem]
 
 
+class RoutingDecision(TypedDict):
+    intent: IntentType
+    should_retrieve: bool
+    should_perceive: bool
+    routing_mode: str
+    warnings: list[str]
+    errors: list[str]
+
+
 class AgentState(TypedDict, total=False):
     # Request context
     job_id: str

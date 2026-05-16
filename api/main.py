@@ -30,6 +30,7 @@ from api.schemas import (
     HealthResponse,
     JobStatusResponse,
     JobSubmitResponse,
+    ReportResponse,
 )
 from core import config
 from core.database import SessionLocal, get_db, init_db
@@ -655,6 +656,49 @@ def _execute_dispatch(
     )
 
 
+def _execute_report(
+    *,
+    db: Session,
+    query: str,
+    session_id: str,
+    image_path: Optional[str],
+    reviewer_enabled: bool,
+) -> ReportResponse:
+    decision = _build_dispatch_decision(
+        query=query,
+        image_path=image_path,
+        reviewer_enabled=reviewer_enabled,
+        requested_mode="auto",
+        upload_present=False,
+    )
+    if decision.should_perceive:
+        job = _submit_job_record(
+            db=db,
+            session_id=session_id,
+            query=query,
+            image_path=image_path,
+            reviewer_enabled=reviewer_enabled,
+            warnings=[f"Report route selected async execution. {decision.reason}"],
+        )
+        return ReportResponse(mode="async", decision=decision, job=job)
+
+    result = _run_consultation(
+        agent=app.state.agent,
+        db=db,
+        job_id=None,
+        session_id=session_id,
+        query=query,
+        image_path=image_path,
+        reviewer_enabled=reviewer_enabled,
+    )
+    merged_warnings = [*result.warnings, decision.reason]
+    return ReportResponse(
+        mode="sync",
+        decision=decision,
+        result=result.model_copy(update={"warnings": merged_warnings}),
+    )
+
+
 def _run_consultation(
     *,
     agent: LiverSmartAgent,
@@ -848,23 +892,21 @@ def collect_consult(
 
 @app.post(
     "/v1/report",
-    response_model=ConsultResponse,
+    response_model=ReportResponse,
     tags=["agent"],
     dependencies=[Depends(_optional_service_auth)],
 )
 def generate_report(
     body: ConsultRequest,
     db: Annotated[Session, Depends(get_db)],
-) -> ConsultResponse:
+) -> ReportResponse:
     session_id = (body.session_id or "").strip() or str(uuid.uuid4())
     session_context = _load_session_context(db, session_id)
     image_path = (body.image_path or "").strip() or (session_context.get("latest_image_path") or "").strip() or None
-    return _run_consultation(
-        agent=app.state.agent,
+    return _execute_report(
         db=db,
-        job_id=None,
-        session_id=session_id,
         query=body.query,
+        session_id=session_id,
         image_path=image_path,
         reviewer_enabled=body.reviewer_enabled,
     )

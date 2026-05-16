@@ -445,7 +445,6 @@
       const query = queryEl.value.trim();
       const sessionId = sessionIdEl.value.trim();
       const imagePath = imagePathEl.value.trim();
-      const imageFile = imageFileEl.files[0];
       const reviewerEnabled = reviewerEnabledEl.checked;
 
       if (!query) {
@@ -460,9 +459,7 @@
 
       try {
         generateBtn.disabled = true;
-        const result = imageFile
-          ? await submitReportUpload(backendUrl, query, sessionId, reviewerEnabled, imageFile)
-          : await submitReport(backendUrl, query, sessionId, imagePath, reviewerEnabled);
+        const result = await runReportFlow(backendUrl, query, sessionId, imagePath, reviewerEnabled);
         setStatus("Report completed.", "ok");
         renderResult(result);
       } catch (error) {
@@ -536,19 +533,19 @@
       return handleResponse(response);
     }
 
-    async function submitReportUpload(backendUrl, query, sessionId, reviewerEnabled, imageFile) {
-      const formData = new FormData();
-      formData.append("query", query);
-      formData.append("session_id", sessionId);
-      formData.append("reviewer_enabled", String(reviewerEnabled));
-      formData.append("image_file", imageFile);
-
-      const response = await fetch(`${backendUrl}/v1/consult/upload`, {
-        method: "POST",
-        headers: requestHeaders(),
-        body: formData,
-      });
-      return handleResponse(response);
+    async function runReportFlow(backendUrl, query, sessionId, imagePath, reviewerEnabled) {
+      setStatus("Submitting formal report request...");
+      const reportResponse = await submitReport(backendUrl, query, sessionId, imagePath, reviewerEnabled);
+      renderDispatchDecision(reportResponse);
+      if (reportResponse.mode === "async" && reportResponse.job) {
+        liveStageState = {};
+        renderStageState();
+        renderJob(reportResponse.job);
+        setStatus("Report task submitted. Streaming backend job status...");
+        return streamJobUntilFinished(backendUrl, reportResponse.job.job_id);
+      }
+      jobBox.textContent = "Synchronous mode: no job created.";
+      return reportResponse.result || {};
     }
 
     async function dispatchJsonRequest(backendUrl, query, imagePath, reviewerEnabled, dispatchMode) {

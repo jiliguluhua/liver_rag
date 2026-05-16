@@ -92,6 +92,10 @@ class DispatchResponse(BaseModel):
     job: Optional[JobSubmitResponse] = None
 
 
+class ReportResponse(DispatchResponse):
+    pass
+
+
 class CollectResponse(BaseModel):
     session_id: str
     assistant_message: str

@@ -616,6 +616,17 @@ def test_report_endpoint_uses_cached_session_image_path(monkeypatch, tmp_path):
             "latest_image_path": "/cached/image.nii.gz",
         },
     )
+    monkeypatch.setattr(
+        api_main,
+        "_build_dispatch_decision",
+        lambda **kwargs: api_main.DispatchDecision(
+            mode="sync",
+            reason="sync path for cached session image",
+            should_retrieve=True,
+            should_perceive=False,
+            intent_hint="clinical",
+        ),
+    )
 
     captured_image_path = None
 
@@ -645,7 +656,54 @@ def test_report_endpoint_uses_cached_session_image_path(monkeypatch, tmp_path):
     )
 
     assert response.status_code == 200
+    payload = response.json()
+    assert payload["mode"] == "sync"
+    assert payload["result"]["report"] == "report from cached image path"
     assert captured_image_path == "/cached/image.nii.gz"
+
+
+def test_report_endpoint_returns_async_job_when_perception_required(monkeypatch, tmp_path):
+    client, TestingSessionLocal = _make_client(monkeypatch, tmp_path)
+
+    monkeypatch.setattr(
+        api_main.redis_store,
+        "get_session_context",
+        lambda session_id: {
+            "session_summary": "cached session",
+            "recent_turns": [{"query": "prior", "report": "answer"}],
+            "latest_image_path": "/cached/image.nii.gz",
+        },
+    )
+    monkeypatch.setattr(
+        api_main,
+        "_build_dispatch_decision",
+        lambda **kwargs: api_main.DispatchDecision(
+            mode="async",
+            reason="perception required",
+            should_retrieve=True,
+            should_perceive=True,
+            intent_hint="clinical",
+        ),
+    )
+
+    response = client.post(
+        "/v1/report",
+        json={"query": "请生成正式报告", "session_id": "session-async", "reviewer_enabled": True},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["mode"] == "async"
+    assert payload["job"]["status"] == "queued"
+    assert api_main.app.state.job_queue.submitted == [payload["job"]["job_id"]]
+
+    db = TestingSessionLocal()
+    try:
+        row = db.get(ConsultationJobRecord, payload["job"]["job_id"])
+        assert row is not None
+        assert row.image_path == "/cached/image.nii.gz"
+    finally:
+        db.close()
 
 
 def test_collect_endpoint_persists_turns_across_requests(monkeypatch, tmp_path):

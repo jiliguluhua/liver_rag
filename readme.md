@@ -1,6 +1,6 @@
 # Liver RAG
 
-一个面向肝病的医疗决策支持系统，集成 LangGraph 工作流、RAG 检索与医学影像感知，并通过异步任务、SSE 实时事件和文件缓存实现高性能、可追溯的后端执行与状态管理。
+一个面向肝病的医疗决策支持系统，集成 LangGraph 工作流、RAG 检索与医学影像感知，并通过异步任务、SSE 实时事件、可切换的 Redis pub/sub 事件分发与文件缓存实现高性能、可追溯的后端执行与状态管理。
 
 当前系统支持：
 
@@ -95,6 +95,7 @@ python scripts/run_graph_demo.py
 - `LIVER_DEFAULT_DICOM_DIR`
 - `LIVER_BACKEND_API_URL`
 - `LIVER_UPLOAD_CACHE_TTL_HOURS`
+- `LIVER_REDIS_URL`
 
 当未配置 `LLM_API_KEY` 时，部分节点会进入 fallback 模式，仍可用于测试流程、接口和降级逻辑。
 

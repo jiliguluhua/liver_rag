@@ -32,6 +32,7 @@ from core.models import ConsultationJobRecord, ConsultationRecord
 from services.job_events import job_event_bus
 from services.job_queue import InMemoryJobQueue
 from services.medical_agent import LiverSmartAgent
+from services.redis_store import redis_store
 
 
 WEB_INDEX_PATH = Path(__file__).resolve().parent.parent / "web" / "index.html"
@@ -177,6 +178,10 @@ def _build_job_status_response(row: ConsultationJobRecord) -> JobStatusResponse:
     )
 
 
+def _cache_job_status_snapshot(snapshot: JobStatusResponse) -> None:
+    redis_store.set_job_status(snapshot.job_id, snapshot.model_dump(mode="json"))
+
+
 def _serialize_sse(event: str, data: dict) -> str:
     payload = json.dumps(data, ensure_ascii=False)
     return f"event: {event}\ndata: {payload}\n\n"
@@ -226,6 +231,7 @@ def _process_consultation_job(job_id: str) -> None:
         job.status = "running"
         job.started_at = datetime.utcnow()
         db.commit()
+        _cache_job_status_snapshot(_build_job_status_response(job))
         job_event_bus.publish(job_id, "job_update", {"job_id": job_id, "status": "running", "message": "Background worker started processing."})
 
         agent: LiverSmartAgent = app.state.agent
@@ -252,6 +258,7 @@ def _process_consultation_job(job_id: str) -> None:
         job.consultation_id = consult_response.consultation_id
         job.completed_at = datetime.utcnow()
         db.commit()
+        _cache_job_status_snapshot(_build_job_status_response(job))
         job_event_bus.publish(
             job_id,
             "job_completed",
@@ -270,6 +277,7 @@ def _process_consultation_job(job_id: str) -> None:
             job.error_message = str(exc)
             job.completed_at = datetime.utcnow()
             db.commit()
+            _cache_job_status_snapshot(_build_job_status_response(job))
             job_event_bus.publish(
                 job_id,
                 "job_failed",
@@ -430,6 +438,7 @@ def submit_consult_job(
     )
     db.add(row)
     db.commit()
+    _cache_job_status_snapshot(_build_job_status_response(row))
 
     app.state.job_queue.submit(job_id)
     return JobSubmitResponse(job_id=job_id, session_id=session_id, status="queued")
@@ -492,6 +501,7 @@ async def submit_upload_job(
         )
         db.add(row)
         db.commit()
+        _cache_job_status_snapshot(_build_job_status_response(row))
 
         app.state.job_queue.submit(job_id)
         return JobSubmitResponse(job_id=job_id, session_id=active_session_id, status="queued")
@@ -510,10 +520,15 @@ def get_job_status(
     job_id: str,
     db: Annotated[Session, Depends(get_db)],
 ) -> JobStatusResponse:
+    cached = redis_store.get_job_status(job_id)
+    if cached is not None:
+        return JobStatusResponse.model_validate(cached)
     row = db.get(ConsultationJobRecord, job_id)
     if row is None:
         raise HTTPException(status_code=404, detail="Consultation job not found.")
-    return _build_job_status_response(row)
+    snapshot = _build_job_status_response(row)
+    _cache_job_status_snapshot(snapshot)
+    return snapshot
 
 
 @app.get(
@@ -522,45 +537,6 @@ def get_job_status(
     dependencies=[Depends(_optional_service_auth)],
 )
 async def stream_job_events(job_id: str):
-    async def event_generator():
-        last_snapshot: Optional[str] = None
-        subscriber = job_event_bus.subscribe(job_id)
-        while True:
-            db = SessionLocal()
-            try:
-                row = db.get(ConsultationJobRecord, job_id)
-                if row is None:
-                    yield _serialize_sse(
-                        "error",
-                        {
-                            "job_id": job_id,
-                            "message": "Consultation job not found.",
-                        },
-                    )
-                    return
-
-                snapshot = _build_job_status_response(row)
-                snapshot_json = snapshot.model_dump_json()
-                if snapshot_json != last_snapshot:
-                    event_name = "job_completed" if snapshot.status == "completed" else "job_failed" if snapshot.status == "failed" else "job_update"
-                    yield _serialize_sse(event_name, snapshot.model_dump(mode="json"))
-                    last_snapshot = snapshot_json
-
-                if snapshot.status in {"completed", "failed"}:
-                    while not subscriber.empty():
-                        live_event = subscriber.get_nowait()
-                        yield _serialize_sse(live_event.event, live_event.data)
-                    return
-            finally:
-                db.close()
-
-            while not subscriber.empty():
-                live_event = subscriber.get_nowait()
-                yield _serialize_sse(live_event.event, live_event.data)
-
-            yield ": keep-alive\n\n"
-            await asyncio.sleep(1.0)
-
     async def wrapped_generator():
         subscriber = job_event_bus.subscribe(job_id)
         try:
@@ -573,6 +549,7 @@ async def stream_job_events(job_id: str):
                         yield _serialize_sse("error", {"job_id": job_id, "message": "Consultation job not found."})
                         return
                     snapshot = _build_job_status_response(row)
+                    _cache_job_status_snapshot(snapshot)
                     snapshot_json = snapshot.model_dump_json()
                     if snapshot_json != last_snapshot:
                         event_name = "job_completed" if snapshot.status == "completed" else "job_failed" if snapshot.status == "failed" else "job_update"

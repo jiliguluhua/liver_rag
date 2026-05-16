@@ -30,30 +30,56 @@ flowchart LR
 ```mermaid
 flowchart TD
     A[进入系统的请求] --> B{接口类型}
-    B -->|POST /v1/consult| C[同步文本/路径咨询]
-    B -->|POST /v1/consult/upload| D[同步上传咨询]
-    B -->|POST /v1/jobs| E[异步任务提交]
-    B -->|POST /v1/jobs/upload| F[异步上传任务提交]
-    B -->|GET /v1/jobs/:job_id| G[查询任务状态]
-    B -->|GET /v1/jobs/:job_id/events| H[订阅任务事件流]
-    B -->|GET /v1/consultations| I[查询历史咨询记录]
+    B -->|POST /v1/dispatch| C[统一文本/路径咨询入口]
+    B -->|POST /v1/dispatch/upload| D[统一上传咨询入口]
+    B -->|POST /v1/consult| E[显式同步咨询]
+    B -->|POST /v1/consult/upload| F[显式同步上传咨询]
+    B -->|POST /v1/jobs| G[显式异步任务提交]
+    B -->|POST /v1/jobs/upload| H[显式异步上传任务提交]
+    B -->|GET /v1/jobs/:job_id| I[查询任务状态]
+    B -->|GET /v1/jobs/:job_id/events| J[订阅任务事件流]
+    B -->|GET /v1/consultations| K[查询历史咨询记录]
 
-    C --> J[直接执行 Agent]
-    D --> K[保存上传文件并复用缓存]
-    K --> J
+    C --> L[共享 analyzer 判断 sync / async]
+    D --> M[保存上传文件并复用缓存]
+    M --> L
+    L -->|sync| N[直接执行 Agent]
+    L -->|async| O[创建 queued 任务并放入队列]
 
-    E --> L[将任务持久化为 queued]
-    F --> M[保存上传内容并持久化任务]
-    L --> N[放入队列]
-    M --> N
-    N --> O[后台 Worker 执行任务]
+    E --> N
+    F --> P[保存上传文件并复用缓存]
+    P --> N
 
-    G --> P[读取任务状态与结果快照]
-    H --> Q[实时接收 job 与节点事件]
-    I --> R[读取 consultation 历史]
+    G --> Q[将任务持久化为 queued]
+    H --> R[保存上传内容并持久化任务]
+    Q --> S[放入队列]
+    R --> S
+    O --> S
+    S --> T[后台 Worker 执行任务]
+
+    I --> U[读取任务状态与结果快照]
+    J --> V[实时接收 job 与节点事件]
+    K --> W[读取 consultation 历史]
+
 ```
 
-## 3. 同步咨询链路
+## 3. Dispatch 分流链路
+
+```mermaid
+sequenceDiagram
+    participant Client as 客户端
+    participant API as FastAPI
+    participant Routing as Shared Analyzer
+
+    Client->>API: POST /v1/dispatch
+    API->>API: 校验请求，解析 session_id / image_path
+    API->>Routing: analyze_intent_routing(query, image_path)
+    Routing-->>API: 返回 intent + should_retrieve + should_perceive
+    API->>API: 根据共享 analyzer 结果决定 sync / async
+    API-->>Client: 返回 DispatchResponse(mode=sync|async, ...)
+```
+
+## 4. 同步咨询链路
 
 ```mermaid
 sequenceDiagram
@@ -63,7 +89,7 @@ sequenceDiagram
     participant Graph as LangGraph
     participant DB as SQLite
 
-    Client->>API: POST /v1/consult
+    Client->>API: POST /v1/consult 或 dispatch(mode=sync)
     API->>API: 校验请求，解析 session_id / image_path
     API->>Agent: run(image_path, query, session_id, reviewer_enabled)
     Agent->>Graph: invoke(initial_state)
@@ -74,7 +100,7 @@ sequenceDiagram
     API-->>Client: 返回 ConsultResponse
 ```
 
-## 4. 异步任务链路
+## 5. 异步任务链路
 
 ```mermaid
 sequenceDiagram
@@ -88,10 +114,12 @@ sequenceDiagram
     participant SSE as SSE 接口
     participant Agent as LiverSmartAgent
 
-    Client->>API: POST /v1/jobs
+    Client->>API: POST /v1/dispatch 或 POST /v1/jobs
+    API->>API: 若走 dispatch，则先调用共享 analyzer 判断是否需要异步
     API->>DB: 插入 consultation_jobs(status=queued)
     API->>Queue: submit(job_id)
-    API-->>Client: 202 Accepted + job_id
+    API-->>Client: 返回 job_id 或 DispatchResponse(mode=async, job=...)
+
 
     Client->>SSE: GET /v1/jobs/:job_id/events
     SSE-->>Client: 建立事件流连接
@@ -111,7 +139,7 @@ sequenceDiagram
     SSE-->>Client: 实时更新任务状态
 ```
 
-## 5. 上传与缓存链路
+## 6. 上传与缓存链路
 
 ```mermaid
 flowchart TD
@@ -123,11 +151,12 @@ flowchart TD
     E -->|否| G[将文件移动到 upload_cache/hash/image.nii.gz]
     F --> H[得到最终 image_path]
     G --> H
-    H --> I[执行同步咨询或创建异步任务]
-    I --> J[删除临时会话目录]
+    H --> I[进入 dispatch / consult / jobs 入口]
+    I --> J[由共享 analyzer 决定同步或异步，或由显式接口直接执行]
+    J --> K[删除临时会话目录]
 ```
 
-## 6. Agent 工作流
+## 7. Agent 工作流
 
 ```mermaid
 flowchart TD
@@ -150,11 +179,12 @@ flowchart TD
 
 这一步的关键点是：
 
-- 先由 `analyzer` 判断是否需要检索、是否需要感知
-- 只有当两者都需要时，`retriever` 和 `perceptor` 才并行执行
-- 二者完成后再汇总进入 `reporter`
+- 先由 analyzer 判断是否需要检索、是否需要感知
+- API 的 dispatch auto 模式与 graph 中的 analyzer 共享同一套路由分析逻辑
+- 只有当两者都需要时，retriever 和 perceptor 才并行执行
+- 二者完成后再汇总进入 reporter
 
-## 7. SSE 事件流模型
+## 8. SSE 事件流模型
 
 ```mermaid
 flowchart TD
@@ -194,7 +224,7 @@ flowchart TD
 - SSE 接口统一消费事件并推送到前端，因此前端侧无需区分底层实现
 - 该设计主要用于跨进程的 job / node 事件推送，不影响现有文件缓存与任务队列实现
 
-## 8. 持久化模型（仅展示核心字段）
+## 9. 持久化模型（仅展示核心字段）
 
 ```mermaid
 erDiagram

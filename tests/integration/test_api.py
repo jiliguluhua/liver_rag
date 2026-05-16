@@ -94,6 +94,25 @@ def test_consult_endpoint_returns_mocked_response(monkeypatch, tmp_path):
     assert payload["intent"] == "clinical"
 
 
+def test_collect_endpoint_returns_follow_up_questions(monkeypatch, tmp_path):
+    client, _session = _make_client(monkeypatch, tmp_path)
+
+    monkeypatch.setattr(api_main.redis_store, "get_session_context", lambda session_id: None)
+    monkeypatch.setattr(api_main.redis_store, "set_session_context", lambda session_id, payload: None)
+
+    response = client.post(
+        "/v1/collect",
+        json={"query": "患者最近总觉得右上腹不舒服", "reviewer_enabled": True},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["session_id"]
+    assert payload["assistant_message"]
+    assert payload["follow_up_questions"]
+    assert payload["can_generate_report"] is False
+
+
 def test_dispatch_endpoint_returns_sync_result_in_auto_mode(monkeypatch, tmp_path):
     client, _session = _make_client(monkeypatch, tmp_path)
 
@@ -570,6 +589,50 @@ def test_consult_loads_recent_session_context(monkeypatch, tmp_path):
     assert captured_context["recent_turns"][0]["query"] == "first visit question"
     assert captured_context["recent_turns"][1]["query"] == "second visit question"
     assert "first visit question" in captured_context["session_summary"]
+
+
+def test_report_endpoint_uses_cached_session_image_path(monkeypatch, tmp_path):
+    client, _session = _make_client(monkeypatch, tmp_path)
+
+    monkeypatch.setattr(
+        api_main.redis_store,
+        "get_session_context",
+        lambda session_id: {
+            "session_summary": "cached session",
+            "recent_turns": [{"query": "prior", "report": "answer"}],
+            "latest_image_path": "/cached/image.nii.gz",
+        },
+    )
+
+    captured_image_path = None
+
+    class FakeAgent:
+        def run(self, image_path, user_query, **kwargs):
+            nonlocal captured_image_path
+            captured_image_path = image_path
+            return (
+                "report from cached image path",
+                None,
+                {
+                    "workflow_status": "completed",
+                    "intent": "clinical",
+                    "perception_status": "skipped",
+                    "warnings": [],
+                    "errors": [],
+                    "evidence": [],
+                    "trace": [],
+                },
+            )
+
+    api_main.app.state.agent = FakeAgent()
+
+    response = client.post(
+        "/v1/report",
+        json={"query": "请生成正式报告", "session_id": "session-memory", "reviewer_enabled": True},
+    )
+
+    assert response.status_code == 200
+    assert captured_image_path == "/cached/image.nii.gz"
 
 
 def test_job_events_stream_returns_error_for_missing_job(monkeypatch, tmp_path):

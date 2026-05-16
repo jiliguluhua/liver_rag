@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session
 from api.schemas import (
     ConsultRequest,
     ConsultResponse,
+    CollectResponse,
     ConsultationSummary,
     DispatchDecision,
     DispatchResponse,
@@ -214,13 +215,24 @@ def _build_session_context_payload(rows: list[ConsultationRecord]) -> dict:
     return {
         "session_summary": summary,
         "recent_turns": recent_turns,
+        "latest_image_path": recent_turns[-1]["image_path"] if recent_turns else None,
     }
+
+
+def _normalize_session_context(payload: Optional[dict]) -> dict:
+    context = payload.copy() if isinstance(payload, dict) else {}
+    recent_turns = context.get("recent_turns")
+    context["recent_turns"] = recent_turns if isinstance(recent_turns, list) else []
+    context["session_summary"] = str(context.get("session_summary", "")).strip()
+    latest_image_path = context.get("latest_image_path")
+    context["latest_image_path"] = str(latest_image_path).strip() if latest_image_path else None
+    return context
 
 
 def _load_session_context(db: Session, session_id: str) -> dict:
     cached = redis_store.get_session_context(session_id)
     if cached is not None:
-        return cached
+        return _normalize_session_context(cached)
     rows = (
         db.query(ConsultationRecord)
         .filter(ConsultationRecord.session_id == session_id)
@@ -230,7 +242,7 @@ def _load_session_context(db: Session, session_id: str) -> dict:
     )
     payload = _build_session_context_payload(rows)
     redis_store.set_session_context(session_id, payload)
-    return payload
+    return _normalize_session_context(payload)
 
 
 def _refresh_session_context_cache(db: Session, session_id: str) -> dict:
@@ -243,7 +255,87 @@ def _refresh_session_context_cache(db: Session, session_id: str) -> dict:
     )
     payload = _build_session_context_payload(rows)
     redis_store.set_session_context(session_id, payload)
-    return payload
+    return _normalize_session_context(payload)
+
+
+def _save_session_context(session_id: str, payload: dict) -> dict:
+    normalized = _normalize_session_context(payload)
+    redis_store.set_session_context(session_id, normalized)
+    return normalized
+
+
+def _update_session_context_for_collect(
+    *,
+    db: Session,
+    session_id: str,
+    query: str,
+    assistant_message: str,
+    image_path: Optional[str],
+) -> dict:
+    context = _load_session_context(db, session_id)
+    recent_turns = list(context.get("recent_turns", []))
+    recent_turns.append(
+        {
+            "query": query,
+            "report": assistant_message,
+            "created_at": datetime.utcnow().isoformat(),
+            "image_path": image_path,
+            "stage": "collect",
+        }
+    )
+    max_turns = max(config.SESSION_CONTEXT_MAX_TURNS, 1)
+    trimmed_turns = recent_turns[-max_turns:]
+    summary = " | ".join(
+        f"Q: {str(turn.get('query', ''))[:80]} A: {str(turn.get('report', ''))[:120]}"
+        for turn in trimmed_turns
+    )
+    return _save_session_context(
+        session_id,
+        {
+            "session_summary": summary or "No prior session context available.",
+            "recent_turns": trimmed_turns,
+            "latest_image_path": image_path or context.get("latest_image_path"),
+        },
+    )
+
+
+def _build_collect_response(
+    *,
+    db: Session,
+    session_id: str,
+    query: str,
+    image_path: Optional[str],
+) -> CollectResponse:
+    context = _load_session_context(db, session_id)
+    prior_turns = context.get("recent_turns", [])
+    effective_image_path = (image_path or context.get("latest_image_path") or "").strip() or None
+    follow_up_questions = [
+        "请补充患者的核心症状、持续时间，以及是否有近期加重。",
+        "请说明已有检查结果、肝病史、治疗史，或医生最关心的判断目标。",
+    ]
+    if not effective_image_path:
+        follow_up_questions.append("如果需要结合影像判断，请提供 NIfTI 路径或上传 .nii.gz 文件。")
+    can_generate_report = bool(effective_image_path) or len(prior_turns) >= 1 or len(query) >= 60
+    assistant_message = (
+        "我先继续收集关键信息，再生成正式报告会更稳妥。"
+        if not can_generate_report
+        else "当前信息已经可以尝试生成正式报告；如果你愿意，也可以先再补充一轮信息。"
+    )
+    updated_context = _update_session_context_for_collect(
+        db=db,
+        session_id=session_id,
+        query=query,
+        assistant_message=assistant_message,
+        image_path=effective_image_path,
+    )
+    return CollectResponse(
+        session_id=session_id,
+        assistant_message=assistant_message,
+        follow_up_questions=follow_up_questions,
+        can_generate_report=can_generate_report,
+        context_turn_count=len(updated_context.get("recent_turns", [])),
+        latest_image_path=updated_context.get("latest_image_path"),
+    )
 
 
 def _serialize_sse(event: str, data: dict) -> str:
@@ -561,6 +653,50 @@ def consult(
 
 
 @app.post(
+    "/v1/collect",
+    response_model=CollectResponse,
+    tags=["agent"],
+    dependencies=[Depends(_optional_service_auth)],
+)
+def collect_consult(
+    body: ConsultRequest,
+    db: Annotated[Session, Depends(get_db)],
+) -> CollectResponse:
+    session_id = (body.session_id or "").strip() or str(uuid.uuid4())
+    image_path = (body.image_path or "").strip() or None
+    return _build_collect_response(
+        db=db,
+        session_id=session_id,
+        query=body.query,
+        image_path=image_path,
+    )
+
+
+@app.post(
+    "/v1/report",
+    response_model=ConsultResponse,
+    tags=["agent"],
+    dependencies=[Depends(_optional_service_auth)],
+)
+def generate_report(
+    body: ConsultRequest,
+    db: Annotated[Session, Depends(get_db)],
+) -> ConsultResponse:
+    session_id = (body.session_id or "").strip() or str(uuid.uuid4())
+    session_context = _load_session_context(db, session_id)
+    image_path = (body.image_path or "").strip() or (session_context.get("latest_image_path") or "").strip() or None
+    return _run_consultation(
+        agent=app.state.agent,
+        db=db,
+        job_id=None,
+        session_id=session_id,
+        query=body.query,
+        image_path=image_path,
+        reviewer_enabled=body.reviewer_enabled,
+    )
+
+
+@app.post(
     "/v1/dispatch",
     response_model=DispatchResponse,
     tags=["agent"],
@@ -635,6 +771,55 @@ async def consult_upload(
         else:
             warnings.append(f"Upload cache miss: stored NIfTI file for sha256={content_hash[:12]}.")
         return consult_response.model_copy(update={"warnings": warnings})
+    finally:
+        await image_file.close()
+        shutil.rmtree(session_root, ignore_errors=True)
+
+
+@app.post(
+    "/v1/collect/upload",
+    response_model=CollectResponse,
+    tags=["agent"],
+    dependencies=[Depends(_optional_service_auth)],
+)
+async def collect_upload(
+    db: Annotated[Session, Depends(get_db)],
+    query: str = Form(...),
+    reviewer_enabled: bool = Form(default=True),
+    session_id: Optional[str] = Form(default=None),
+    image_file: UploadFile = File(...),
+) -> CollectResponse:
+    del reviewer_enabled
+    filename = (image_file.filename or "").lower()
+    if not filename.endswith(".nii.gz"):
+        raise HTTPException(status_code=400, detail="Only .nii.gz uploads are supported.")
+
+    active_session_id = (session_id or "").strip() or str(uuid.uuid4())
+    session_root = Path(config.UPLOADS_DIR) / active_session_id
+    if session_root.exists():
+        shutil.rmtree(session_root)
+    session_root.mkdir(parents=True, exist_ok=True)
+
+    try:
+        temp_file_path = session_root / "incoming.nii.gz"
+        content_hash = _write_upload_and_hash(image_file, temp_file_path)
+        cache_dir, cached_file_path = _resolve_cache_paths(content_hash)
+        cache_hit = cached_file_path.exists() and cached_file_path.is_file()
+
+        if not cache_hit:
+            if cache_dir.exists():
+                shutil.rmtree(cache_dir)
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(temp_file_path), str(cached_file_path))
+        else:
+            temp_file_path.unlink(missing_ok=True)
+
+        return _build_collect_response(
+            db=db,
+            session_id=active_session_id,
+            query=query,
+            image_path=str(cached_file_path),
+        )
     finally:
         await image_file.close()
         shutil.rmtree(session_root, ignore_errors=True)

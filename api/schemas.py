@@ -90,3 +90,12 @@ class DispatchResponse(BaseModel):
     decision: DispatchDecision
     result: Optional[ConsultResponse] = None
     job: Optional[JobSubmitResponse] = None
+
+
+class CollectResponse(BaseModel):
+    session_id: str
+    assistant_message: str
+    follow_up_questions: list[str] = Field(default_factory=list)
+    can_generate_report: bool
+    context_turn_count: int = 0
+    latest_image_path: Optional[str] = None

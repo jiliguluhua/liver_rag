@@ -253,6 +253,11 @@
         </label>
 
         <label>
+          Session ID
+          <input id="sessionId" type="text" value="" placeholder="Leave empty to create a new session" />
+        </label>
+
+        <label>
           NIfTI file path
           <input id="imagePath" type="text" value="" placeholder="Optional local .nii.gz path visible to the backend" />
         </label>
@@ -284,7 +289,8 @@
         </label>
 
         <div class="actions">
-          <button class="primary" id="analyzeBtn" type="button">Analyze</button>
+          <button class="primary" id="collectBtn" type="button">Continue Intake</button>
+          <button class="secondary" id="generateBtn" type="button" disabled>Generate Report</button>
           <button class="secondary" id="clearBtn" type="button">Clear</button>
         </div>
 
@@ -297,7 +303,7 @@
       <div class="preview" id="previewBox">No preview yet.</div>
 
       <div class="result-block">
-        <h3>Response</h3>
+        <h3>Assistant</h3>
         <div id="parallelHint" class="meta">No parallel branch information yet.</div>
         <div id="reportBox" class="mono">No response yet.</div>
       </div>
@@ -331,13 +337,15 @@
   <script>
     const backendUrlEl = document.getElementById("backendUrl");
     const serviceApiKeyEl = document.getElementById("serviceApiKey");
+    const sessionIdEl = document.getElementById("sessionId");
     const imagePathEl = document.getElementById("imagePath");
     const imageFileEl = document.getElementById("imageFile");
     const uploadMetaEl = document.getElementById("uploadMeta");
     const queryEl = document.getElementById("query");
     const reviewerEnabledEl = document.getElementById("reviewerEnabled");
     const dispatchModeEl = document.getElementById("dispatchMode");
-    const analyzeBtn = document.getElementById("analyzeBtn");
+    const collectBtn = document.getElementById("collectBtn");
+    const generateBtn = document.getElementById("generateBtn");
     const clearBtn = document.getElementById("clearBtn");
     const statusBox = document.getElementById("statusBox");
     const previewBox = document.getElementById("previewBox");
@@ -349,6 +357,8 @@
     const evidenceBox = document.getElementById("evidenceBox");
     const traceBox = document.getElementById("traceBox");
     let activeJobEventSource = null;
+    let currentSessionId = "";
+    let lastCollectPayload = null;
     let liveTraceItems = [];
     let currentJobStage = "No active stage.";
     let liveStageState = {};
@@ -365,6 +375,7 @@
 
     clearBtn.addEventListener("click", () => {
       queryEl.value = "";
+      sessionIdEl.value = "";
       imagePathEl.value = "";
       imageFileEl.value = "";
       reviewerEnabledEl.checked = true;
@@ -380,18 +391,20 @@
       traceBox.textContent = "None.";
       previewBox.innerHTML = "No preview yet.";
       closeActiveJobEventSource();
+      currentSessionId = "";
+      lastCollectPayload = null;
+      generateBtn.disabled = true;
       liveTraceItems = [];
       currentJobStage = "No active stage.";
       liveStageState = {};
     });
 
-    analyzeBtn.addEventListener("click", async () => {
+    collectBtn.addEventListener("click", async () => {
       const backendUrl = backendUrlEl.value.trim().replace(/\/$/, "");
       const query = queryEl.value.trim();
+      const sessionId = sessionIdEl.value.trim();
       const imagePath = imagePathEl.value.trim();
       const imageFile = imageFileEl.files[0];
-      const reviewerEnabled = reviewerEnabledEl.checked;
-      const dispatchMode = dispatchModeEl.value;
 
       if (!query) {
         setStatus("Please enter a question before submitting.", "warn");
@@ -399,14 +412,48 @@
       }
 
       try {
-        analyzeBtn.disabled = true;
-        const result = await runDispatchFlow(backendUrl, query, imagePath, reviewerEnabled, imageFile, dispatchMode);
-        setStatus("Analysis completed.", "ok");
+        collectBtn.disabled = true;
+        const result = imageFile
+          ? await submitCollectUpload(backendUrl, query, sessionId, imageFile)
+          : await submitCollect(backendUrl, query, sessionId, imagePath);
+        handleCollectResponse(result);
+        setStatus("Intake updated. Review the follow-up questions or generate the report.", "ok");
+      } catch (error) {
+        setStatus(error.message || "Request failed.", "err");
+      } finally {
+        collectBtn.disabled = false;
+      }
+    });
+
+    generateBtn.addEventListener("click", async () => {
+      const backendUrl = backendUrlEl.value.trim().replace(/\/$/, "");
+      const query = queryEl.value.trim();
+      const sessionId = sessionIdEl.value.trim();
+      const imagePath = imagePathEl.value.trim();
+      const imageFile = imageFileEl.files[0];
+      const reviewerEnabled = reviewerEnabledEl.checked;
+
+      if (!query) {
+        setStatus("Please enter a question before generating the report.", "warn");
+        return;
+      }
+
+      if (!sessionId) {
+        setStatus("Please complete intake first so the session can be created.", "warn");
+        return;
+      }
+
+      try {
+        generateBtn.disabled = true;
+        const result = imageFile
+          ? await submitReportUpload(backendUrl, query, sessionId, reviewerEnabled, imageFile)
+          : await submitReport(backendUrl, query, sessionId, imagePath, reviewerEnabled);
+        setStatus("Report completed.", "ok");
         renderResult(result);
       } catch (error) {
         setStatus(error.message || "Request failed.", "err");
       } finally {
-        analyzeBtn.disabled = false;
+        generateBtn.disabled = false;
       }
     });
 
@@ -425,6 +472,68 @@
       }
       jobBox.textContent = "Synchronous mode: no job created.";
       return dispatchResponse.result || {};
+    }
+
+    async function submitCollect(backendUrl, query, sessionId, imagePath) {
+      const response = await fetch(`${backendUrl}/v1/collect`, {
+        method: "POST",
+        headers: requestHeaders({
+          "Content-Type": "application/json",
+        }),
+        body: JSON.stringify({
+          query,
+          session_id: sessionId || null,
+          image_path: imagePath || null,
+          reviewer_enabled: true,
+        }),
+      });
+      return handleResponse(response);
+    }
+
+    async function submitCollectUpload(backendUrl, query, sessionId, imageFile) {
+      const formData = new FormData();
+      formData.append("query", query);
+      formData.append("session_id", sessionId || "");
+      formData.append("reviewer_enabled", "true");
+      formData.append("image_file", imageFile);
+
+      const response = await fetch(`${backendUrl}/v1/collect/upload`, {
+        method: "POST",
+        headers: requestHeaders(),
+        body: formData,
+      });
+      return handleResponse(response);
+    }
+
+    async function submitReport(backendUrl, query, sessionId, imagePath, reviewerEnabled) {
+      const response = await fetch(`${backendUrl}/v1/report`, {
+        method: "POST",
+        headers: requestHeaders({
+          "Content-Type": "application/json",
+        }),
+        body: JSON.stringify({
+          query,
+          session_id: sessionId,
+          image_path: imagePath || null,
+          reviewer_enabled: reviewerEnabled,
+        }),
+      });
+      return handleResponse(response);
+    }
+
+    async function submitReportUpload(backendUrl, query, sessionId, reviewerEnabled, imageFile) {
+      const formData = new FormData();
+      formData.append("query", query);
+      formData.append("session_id", sessionId);
+      formData.append("reviewer_enabled", String(reviewerEnabled));
+      formData.append("image_file", imageFile);
+
+      const response = await fetch(`${backendUrl}/v1/consult/upload`, {
+        method: "POST",
+        headers: requestHeaders(),
+        body: formData,
+      });
+      return handleResponse(response);
     }
 
     async function dispatchJsonRequest(backendUrl, query, imagePath, reviewerEnabled, dispatchMode) {
@@ -610,6 +719,7 @@
     }
 
     function renderResult(payload) {
+      generateBtn.disabled = false;
       const trace = payload.trace || [];
       liveTraceItems = [];
       currentJobStage = "Current stage: completed";
@@ -647,6 +757,34 @@
       } else {
         previewBox.textContent = "No preview returned.";
       }
+    }
+
+    function handleCollectResponse(payload) {
+      lastCollectPayload = payload;
+      currentSessionId = payload.session_id || currentSessionId;
+      sessionIdEl.value = currentSessionId;
+      if (payload.latest_image_path && !imagePathEl.value.trim()) {
+        imagePathEl.value = payload.latest_image_path;
+      }
+      generateBtn.disabled = !payload.can_generate_report;
+      parallelHintEl.textContent = `Intake turns cached: ${payload.context_turn_count || 0}`;
+      const followUps = payload.follow_up_questions || [];
+      reportBox.textContent = [
+        payload.assistant_message || "No assistant message.",
+        "",
+        "Follow-up questions:",
+        ...(followUps.length ? followUps.map((item, idx) => `${idx + 1}. ${item}`) : ["None."]),
+      ].join("\n");
+      warningsBox.textContent = "None.";
+      evidenceBox.textContent = "None.";
+      traceBox.textContent = "None.";
+      previewBox.textContent = "No preview yet.";
+      jobBox.textContent = [
+        `Session ID: ${payload.session_id || "-"}`,
+        `Can generate report: ${payload.can_generate_report ? "yes" : "no"}`,
+        `Latest image path: ${payload.latest_image_path || "-"}`,
+      ].join("\n");
+      stageBox.textContent = "collect: completed | Intake updated";
     }
 
     function escapeHtml(text) {

@@ -87,6 +87,7 @@
 
     input[type="text"],
     input[type="password"],
+    select,
     textarea,
     input[type="file"] {
       width: 100%;
@@ -273,9 +274,13 @@
           Enable reviewer
         </label>
 
-        <label class="checkbox-row">
-          <input id="asyncMode" type="checkbox" checked />
-          Use async job mode
+        <label>
+          Submission mode
+          <select id="dispatchMode">
+            <option value="auto" selected>Auto</option>
+            <option value="async">Force async</option>
+            <option value="sync">Force sync</option>
+          </select>
         </label>
 
         <div class="actions">
@@ -331,7 +336,7 @@
     const uploadMetaEl = document.getElementById("uploadMeta");
     const queryEl = document.getElementById("query");
     const reviewerEnabledEl = document.getElementById("reviewerEnabled");
-    const asyncModeEl = document.getElementById("asyncMode");
+    const dispatchModeEl = document.getElementById("dispatchMode");
     const analyzeBtn = document.getElementById("analyzeBtn");
     const clearBtn = document.getElementById("clearBtn");
     const statusBox = document.getElementById("statusBox");
@@ -363,7 +368,7 @@
       imagePathEl.value = "";
       imageFileEl.value = "";
       reviewerEnabledEl.checked = true;
-      asyncModeEl.checked = true;
+      dispatchModeEl.value = "auto";
       uploadMetaEl.textContent = "No file selected. The backend will use path mode.";
       setStatus("Ready.");
       parallelHintEl.textContent = "No parallel branch information yet.";
@@ -386,7 +391,7 @@
       const imagePath = imagePathEl.value.trim();
       const imageFile = imageFileEl.files[0];
       const reviewerEnabled = reviewerEnabledEl.checked;
-      const asyncMode = asyncModeEl.checked;
+      const dispatchMode = dispatchModeEl.value;
 
       if (!query) {
         setStatus("Please enter a question before submitting.", "warn");
@@ -395,11 +400,8 @@
 
       try {
         analyzeBtn.disabled = true;
-        const result = asyncMode
-          ? await runAsyncFlow(backendUrl, query, imagePath, reviewerEnabled, imageFile)
-          : await runSyncFlow(backendUrl, query, imagePath, reviewerEnabled, imageFile);
-
-        setStatus(asyncMode ? "Async analysis completed." : "Analysis completed.", "ok");
+        const result = await runDispatchFlow(backendUrl, query, imagePath, reviewerEnabled, imageFile, dispatchMode);
+        setStatus("Analysis completed.", "ok");
         renderResult(result);
       } catch (error) {
         setStatus(error.message || "Request failed.", "err");
@@ -408,28 +410,25 @@
       }
     });
 
-    async function runSyncFlow(backendUrl, query, imagePath, reviewerEnabled, imageFile) {
+    async function runDispatchFlow(backendUrl, query, imagePath, reviewerEnabled, imageFile, dispatchMode) {
+      setStatus(imageFile ? "Uploading NIfTI file and submitting to backend dispatcher..." : "Submitting request to backend dispatcher...");
+      const dispatchResponse = imageFile
+        ? await dispatchUploadRequest(backendUrl, query, reviewerEnabled, imageFile, dispatchMode)
+        : await dispatchJsonRequest(backendUrl, query, imagePath, reviewerEnabled, dispatchMode);
+      renderDispatchDecision(dispatchResponse);
+      if (dispatchResponse.mode === "async") {
+        liveStageState = {};
+        renderStageState();
+        renderJob(dispatchResponse.job || {});
+        setStatus("Job submitted. Streaming backend job status...");
+        return streamJobUntilFinished(backendUrl, dispatchResponse.job.job_id);
+      }
       jobBox.textContent = "Synchronous mode: no job created.";
-      setStatus(imageFile ? "Uploading NIfTI file and waiting for backend processing..." : "Sending request to backend...");
-      return imageFile
-        ? sendUploadRequest(backendUrl, query, reviewerEnabled, imageFile)
-        : sendJsonRequest(backendUrl, query, imagePath, reviewerEnabled);
+      return dispatchResponse.result || {};
     }
 
-    async function runAsyncFlow(backendUrl, query, imagePath, reviewerEnabled, imageFile) {
-      setStatus(imageFile ? "Uploading NIfTI file and creating async job..." : "Submitting async job...");
-      const submitted = imageFile
-        ? await submitUploadJob(backendUrl, query, reviewerEnabled, imageFile)
-        : await submitJsonJob(backendUrl, query, imagePath, reviewerEnabled);
-      liveStageState = {};
-      renderStageState();
-      renderJob(submitted);
-      setStatus("Job submitted. Streaming backend job status...");
-      return streamJobUntilFinished(backendUrl, submitted.job_id);
-    }
-
-    async function sendJsonRequest(backendUrl, query, imagePath, reviewerEnabled) {
-      const response = await fetch(`${backendUrl}/v1/consult`, {
+    async function dispatchJsonRequest(backendUrl, query, imagePath, reviewerEnabled, dispatchMode) {
+      const response = await fetch(`${backendUrl}/v1/dispatch?dispatch_mode=${encodeURIComponent(dispatchMode)}`, {
         method: "POST",
         headers: requestHeaders({
           "Content-Type": "application/json",
@@ -443,42 +442,14 @@
       return handleResponse(response);
     }
 
-    async function submitJsonJob(backendUrl, query, imagePath, reviewerEnabled) {
-      const response = await fetch(`${backendUrl}/v1/jobs`, {
-        method: "POST",
-        headers: requestHeaders({
-          "Content-Type": "application/json",
-        }),
-        body: JSON.stringify({
-          query,
-          image_path: imagePath || null,
-          reviewer_enabled: reviewerEnabled,
-        }),
-      });
-      return handleResponse(response);
-    }
-
-    async function sendUploadRequest(backendUrl, query, reviewerEnabled, imageFile) {
+    async function dispatchUploadRequest(backendUrl, query, reviewerEnabled, imageFile, dispatchMode) {
       const formData = new FormData();
       formData.append("query", query);
       formData.append("reviewer_enabled", String(reviewerEnabled));
+      formData.append("dispatch_mode", dispatchMode);
       formData.append("image_file", imageFile);
 
-      const response = await fetch(`${backendUrl}/v1/consult/upload`, {
-        method: "POST",
-        headers: requestHeaders(),
-        body: formData,
-      });
-      return handleResponse(response);
-    }
-
-    async function submitUploadJob(backendUrl, query, reviewerEnabled, imageFile) {
-      const formData = new FormData();
-      formData.append("query", query);
-      formData.append("reviewer_enabled", String(reviewerEnabled));
-      formData.append("image_file", imageFile);
-
-      const response = await fetch(`${backendUrl}/v1/jobs/upload`, {
+      const response = await fetch(`${backendUrl}/v1/dispatch/upload`, {
         method: "POST",
         headers: requestHeaders(),
         body: formData,
@@ -624,6 +595,18 @@
         lines.push(`Error: ${job.error_message}`);
       }
       jobBox.textContent = lines.join("\n");
+    }
+
+    function renderDispatchDecision(dispatchResponse) {
+      const decision = dispatchResponse.decision || {};
+      const lines = [
+        `Dispatch mode: ${dispatchResponse.mode || "-"}`,
+        `Reason: ${decision.reason || "-"}`,
+        `Intent hint: ${decision.intent_hint || "-"}`,
+        `Retrieve: ${decision.should_retrieve ?? false}`,
+        `Perceive: ${decision.should_perceive ?? false}`,
+      ];
+      stageBox.textContent = lines.join("\n");
     }
 
     function renderResult(payload) {

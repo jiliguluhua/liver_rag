@@ -43,6 +43,23 @@ def _call_backend_json(backend_url: str, service_api_key: str, payload: dict) ->
     return response.json()
 
 
+def _dispatch_backend_json(
+    backend_url: str,
+    service_api_key: str,
+    payload: dict,
+    dispatch_mode: str,
+) -> dict:
+    response = requests.post(
+        f"{backend_url.rstrip('/')}/v1/dispatch",
+        params={"dispatch_mode": dispatch_mode},
+        json=payload,
+        headers=_headers(service_api_key),
+        timeout=120,
+    )
+    response.raise_for_status()
+    return response.json()
+
+
 def _call_backend_upload(
     backend_url: str,
     service_api_key: str,
@@ -56,6 +73,30 @@ def _call_backend_upload(
         data={
             "query": query,
             "reviewer_enabled": str(reviewer_enabled).lower(),
+        },
+        files={"image_file": (image_file.name, image_file.getvalue(), image_file.type or "application/octet-stream")},
+        headers=_headers(service_api_key),
+        timeout=300,
+    )
+    response.raise_for_status()
+    return response.json()
+
+
+def _dispatch_backend_upload(
+    backend_url: str,
+    service_api_key: str,
+    *,
+    query: str,
+    reviewer_enabled: bool,
+    dispatch_mode: str,
+    image_file,
+) -> dict:
+    response = requests.post(
+        f"{backend_url.rstrip('/')}/v1/dispatch/upload",
+        data={
+            "query": query,
+            "reviewer_enabled": str(reviewer_enabled).lower(),
+            "dispatch_mode": dispatch_mode,
         },
         files={"image_file": (image_file.name, image_file.getvalue(), image_file.type or "application/octet-stream")},
         headers=_headers(service_api_key),
@@ -126,6 +167,18 @@ def _status_message(status: str) -> str:
         "failed": "Task failed. Inspect the returned error message.",
     }
     return mapping.get(status, "Task state updated.")
+
+
+def _render_dispatch_detail(dispatch_response: dict, detail_placeholder) -> None:
+    decision = dispatch_response.get("decision") or {}
+    lines = [
+        f"Dispatch mode: {dispatch_response.get('mode', 'unknown')}",
+        f"Reason: {decision.get('reason', '-')}",
+        f"Intent hint: {decision.get('intent_hint', '-')}",
+        f"Retrieve: {decision.get('should_retrieve', False)}",
+        f"Perceive: {decision.get('should_perceive', False)}",
+    ]
+    detail_placeholder.caption("\n".join(lines))
 
 
 def _render_job_snapshot(job: dict, status_placeholder, detail_placeholder) -> None:
@@ -240,7 +293,12 @@ with st.sidebar:
     dicom_dir = st.text_input("DICOM directory path", value=config.DEFAULT_DICOM_DIR or "")
     image_file = st.file_uploader("NIfTI upload", type=["nii.gz"], help="Optional .nii.gz upload. When present, upload mode overrides path mode.")
     reviewer_enabled = st.checkbox("Enable reviewer", value=True)
-    async_mode = st.checkbox("Use async job mode", value=True)
+    dispatch_mode = st.selectbox(
+        "Submission mode",
+        options=["auto", "async", "sync"],
+        index=0,
+        help="Auto lets the backend choose between synchronous and asynchronous execution.",
+    )
     poll_interval_seconds = st.slider("Job polling interval (seconds)", min_value=1.0, max_value=5.0, value=1.5, step=0.5)
     max_wait_seconds = st.slider("Max wait time (seconds)", min_value=15, max_value=300, value=90, step=15)
     if image_file is not None:
@@ -300,34 +358,38 @@ with col_chat:
                 phase = st.empty()
                 detail = st.empty()
                 try:
-                    if async_mode:
-                        phase.info(
-                            "Uploading NIfTI file and creating async job..."
-                            if image_file is not None
-                            else "Submitting async consultation job to backend..."
+                    phase.info(
+                        "Submitting upload request to backend dispatcher..."
+                        if image_file is not None
+                        else "Submitting consultation request to backend dispatcher..."
+                    )
+                    dispatch_response = (
+                        _dispatch_backend_upload(
+                            backend_url=backend_url,
+                            service_api_key=service_api_key,
+                            query=query,
+                            reviewer_enabled=reviewer_enabled,
+                            dispatch_mode=dispatch_mode,
+                            image_file=image_file,
                         )
-                        submitted = (
-                            _submit_upload_job(
-                                backend_url=backend_url,
-                                service_api_key=service_api_key,
-                                query=query,
-                                reviewer_enabled=reviewer_enabled,
-                                image_file=image_file,
-                            )
-                            if image_file is not None
-                            else _submit_job(
-                                backend_url=backend_url,
-                                service_api_key=service_api_key,
-                                payload={
-                                    "query": query,
-                                    "image_path": (dicom_dir or "").strip() or None,
-                                    "reviewer_enabled": reviewer_enabled,
-                                },
-                            )
+                        if image_file is not None
+                        else _dispatch_backend_json(
+                            backend_url=backend_url,
+                            service_api_key=service_api_key,
+                            dispatch_mode=dispatch_mode,
+                            payload={
+                                "query": query,
+                                "image_path": (dicom_dir or "").strip() or None,
+                                "reviewer_enabled": reviewer_enabled,
+                            },
                         )
+                    )
+                    _render_dispatch_detail(dispatch_response, detail)
+
+                    if dispatch_response.get("mode") == "async":
+                        submitted = dispatch_response.get("job") or {}
                         job_id = submitted["job_id"]
                         phase.success(f"Job submitted successfully: {job_id}")
-                        detail.caption("Frontend is now polling backend job status.")
 
                         job = _poll_job_until_finished(
                             backend_url=backend_url,
@@ -346,32 +408,8 @@ with col_chat:
                             result = job.get("result") or {}
                             _render_response(result, preview_placeholder)
                     else:
-                        phase.info(
-                            "Uploading NIfTI file and waiting for synchronous processing..."
-                            if image_file is not None
-                            else "Sending synchronous request to backend..."
-                        )
-                        response = (
-                            _call_backend_upload(
-                                backend_url=backend_url,
-                                service_api_key=service_api_key,
-                                query=query,
-                                reviewer_enabled=reviewer_enabled,
-                                image_file=image_file,
-                            )
-                            if image_file is not None
-                            else _call_backend_json(
-                                backend_url=backend_url,
-                                service_api_key=service_api_key,
-                                payload={
-                                    "query": query,
-                                    "image_path": (dicom_dir or "").strip() or None,
-                                    "reviewer_enabled": reviewer_enabled,
-                                },
-                            )
-                        )
                         phase.success("Backend finished request processing.")
-                        detail.caption("Synchronous mode completed in a single request.")
+                        response = dispatch_response.get("result") or {}
                         _render_response(response, preview_placeholder)
                 except requests.HTTPError as exc:
                     detail_text = exc.response.text if exc.response is not None else str(exc)

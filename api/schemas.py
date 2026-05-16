@@ -53,6 +53,7 @@ class HealthResponse(BaseModel):
 
 
 JobStatus = Literal["queued", "running", "completed", "failed"]
+DispatchMode = Literal["auto", "sync", "async"]
 
 
 class JobSubmitResponse(BaseModel):
@@ -74,3 +75,18 @@ class JobStatusResponse(BaseModel):
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
     result: Optional[ConsultResponse] = None
+
+
+class DispatchDecision(BaseModel):
+    mode: DispatchMode
+    reason: str
+    should_retrieve: bool
+    should_perceive: bool
+    intent_hint: str
+
+
+class DispatchResponse(BaseModel):
+    mode: DispatchMode
+    decision: DispatchDecision
+    result: Optional[ConsultResponse] = None
+    job: Optional[JobSubmitResponse] = None

@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import asyncio
 import base64
@@ -22,6 +22,9 @@ from api.schemas import (
     ConsultRequest,
     ConsultResponse,
     ConsultationSummary,
+    DispatchDecision,
+    DispatchResponse,
+    DispatchMode,
     HealthResponse,
     JobStatusResponse,
     JobSubmitResponse,
@@ -36,6 +39,39 @@ from services.redis_store import redis_store
 
 
 WEB_INDEX_PATH = Path(__file__).resolve().parent.parent / "web" / "index.html"
+IMAGE_ANALYSIS_KEYWORDS = {
+    "image",
+    "imaging",
+    "scan",
+    "dicom",
+    "nifti",
+    "nii",
+    "ct",
+    "mri",
+    "mr",
+    "segmentation",
+    "segment",
+    "lesion",
+    "tumor",
+    "tumour",
+    "volume",
+    "size",
+    "boundary",
+    "enhancement",
+    "arterial",
+    "portal",
+    "washout",
+    "radiology",
+    "slice",
+}
+TEXT_ONLY_HINT_KEYWORDS = {
+    "guideline",
+    "education",
+    "overview",
+    "summary",
+    "mechanism",
+    "instruction",
+}
 
 
 def _pil_to_png_b64(img: Image.Image) -> str:
@@ -52,6 +88,13 @@ def _optional_service_auth(
         return
     if (x_api_key or "").strip() != expected:
         raise HTTPException(status_code=401, detail="Invalid or missing X-API-Key")
+
+
+def _normalize_dispatch_mode(raw_mode: Optional[str]) -> DispatchMode:
+    mode = (raw_mode or "auto").strip().lower()
+    if mode not in {"auto", "sync", "async"}:
+        raise HTTPException(status_code=400, detail="dispatch_mode must be one of: auto, sync, async")
+    return mode  # type: ignore[return-value]
 
 
 def _cleanup_expired_upload_cache(cache_root: Path) -> None:
@@ -185,6 +228,161 @@ def _cache_job_status_snapshot(snapshot: JobStatusResponse) -> None:
 def _serialize_sse(event: str, data: dict) -> str:
     payload = json.dumps(data, ensure_ascii=False)
     return f"event: {event}\ndata: {payload}\n\n"
+
+
+def _submit_job_record(
+    *,
+    db: Session,
+    session_id: str,
+    query: str,
+    image_path: Optional[str],
+    reviewer_enabled: bool,
+    warnings: Optional[list[str]] = None,
+) -> JobSubmitResponse:
+    job_id = str(uuid.uuid4())
+    row = ConsultationJobRecord(
+        id=job_id,
+        session_id=session_id,
+        query=query,
+        image_path=image_path,
+        reviewer_enabled=reviewer_enabled,
+        status="queued",
+        warnings_json=_json_dumps(warnings or []),
+    )
+    db.add(row)
+    db.commit()
+    _cache_job_status_snapshot(_build_job_status_response(row))
+    app.state.job_queue.submit(job_id)
+    return JobSubmitResponse(job_id=job_id, session_id=session_id, status="queued")
+
+
+def _build_dispatch_decision(
+    *,
+    query: str,
+    image_path: Optional[str],
+    reviewer_enabled: bool,
+    requested_mode: DispatchMode,
+    upload_present: bool,
+) -> DispatchDecision:
+    normalized_query = (query or "").strip().lower()
+    normalized_image_path = (image_path or "").strip()
+    has_image_signal = upload_present or bool(normalized_image_path)
+    image_keyword_hits = [kw for kw in IMAGE_ANALYSIS_KEYWORDS if kw in normalized_query]
+    text_only_hits = [kw for kw in TEXT_ONLY_HINT_KEYWORDS if kw in normalized_query]
+    should_perceive = has_image_signal and (
+        upload_present
+        or any(
+            hit in normalized_query
+            for hit in {
+                "ct",
+                "mri",
+                "scan",
+                "lesion",
+                "tumor",
+                "volume",
+                "segmentation",
+                "image",
+                "imaging",
+                "dicom",
+                "nifti",
+            }
+        )
+        or normalized_image_path.endswith((".nii", ".nii.gz"))
+    )
+    should_retrieve = True
+    intent_hint = "education" if text_only_hits and not should_perceive else "clinical"
+
+    if requested_mode == "sync":
+        return DispatchDecision(
+            mode="sync",
+            reason="Manual override forced synchronous execution.",
+            should_retrieve=should_retrieve,
+            should_perceive=should_perceive,
+            intent_hint=intent_hint,
+        )
+    if requested_mode == "async":
+        return DispatchDecision(
+            mode="async",
+            reason="Manual override forced asynchronous execution.",
+            should_retrieve=should_retrieve,
+            should_perceive=should_perceive,
+            intent_hint=intent_hint,
+        )
+
+    if should_perceive and upload_present:
+        reason = "Auto dispatch selected async because a NIfTI upload was provided and the query appears to need image analysis."
+        mode: DispatchMode = "async"
+    elif should_perceive and reviewer_enabled:
+        reason = "Auto dispatch selected async because the query appears image-heavy and reviewer processing is enabled."
+        mode = "async"
+    elif should_perceive and has_image_signal:
+        reason = "Auto dispatch selected async because the query appears to require image perception."
+        mode = "async"
+    elif has_image_signal and image_keyword_hits:
+        reason = "Auto dispatch selected async because image input was provided and the query references imaging-specific concepts."
+        mode = "async"
+    else:
+        reason = "Auto dispatch selected sync because the request appears suitable for direct completion."
+        mode = "sync"
+
+    return DispatchDecision(
+        mode=mode,
+        reason=reason,
+        should_retrieve=should_retrieve,
+        should_perceive=should_perceive,
+        intent_hint=intent_hint,
+    )
+
+
+def _execute_dispatch(
+    *,
+    db: Session,
+    query: str,
+    session_id: Optional[str],
+    image_path: Optional[str],
+    reviewer_enabled: bool,
+    requested_mode: DispatchMode,
+    upload_present: bool,
+    extra_warnings: Optional[list[str]] = None,
+) -> DispatchResponse:
+    active_session_id = (session_id or "").strip() or str(uuid.uuid4())
+    normalized_image_path = (image_path or "").strip() or (config.DEFAULT_DICOM_DIR or "").strip() or None
+    decision = _build_dispatch_decision(
+        query=query,
+        image_path=normalized_image_path,
+        reviewer_enabled=reviewer_enabled,
+        requested_mode=requested_mode,
+        upload_present=upload_present,
+    )
+
+    if decision.mode == "async":
+        warnings = list(extra_warnings or [])
+        warnings.append(decision.reason)
+        job = _submit_job_record(
+            db=db,
+            session_id=active_session_id,
+            query=query,
+            image_path=normalized_image_path,
+            reviewer_enabled=reviewer_enabled,
+            warnings=warnings,
+        )
+        return DispatchResponse(mode="async", decision=decision, job=job)
+
+    result = _run_consultation(
+        agent=app.state.agent,
+        db=db,
+        job_id=None,
+        session_id=active_session_id,
+        query=query,
+        image_path=normalized_image_path,
+        reviewer_enabled=reviewer_enabled,
+    )
+    merged_warnings = [*result.warnings, *(extra_warnings or []), decision.reason]
+    return DispatchResponse(
+        mode="sync",
+        decision=decision,
+        result=result.model_copy(update={"warnings": merged_warnings}),
+    )
 
 
 def _run_consultation(
@@ -356,6 +554,28 @@ def consult(
 
 
 @app.post(
+    "/v1/dispatch",
+    response_model=DispatchResponse,
+    tags=["agent"],
+    dependencies=[Depends(_optional_service_auth)],
+)
+def dispatch_consult(
+    body: ConsultRequest,
+    db: Annotated[Session, Depends(get_db)],
+    dispatch_mode: str = Query(default="auto", description="Dispatch mode: auto, sync, or async."),
+) -> DispatchResponse:
+    return _execute_dispatch(
+        db=db,
+        query=body.query,
+        session_id=body.session_id,
+        image_path=body.image_path,
+        reviewer_enabled=body.reviewer_enabled,
+        requested_mode=_normalize_dispatch_mode(dispatch_mode),
+        upload_present=False,
+    )
+
+
+@app.post(
     "/v1/consult/upload",
     response_model=ConsultResponse,
     tags=["agent"],
@@ -414,6 +634,66 @@ async def consult_upload(
 
 
 @app.post(
+    "/v1/dispatch/upload",
+    response_model=DispatchResponse,
+    tags=["agent"],
+    dependencies=[Depends(_optional_service_auth)],
+)
+async def dispatch_upload(
+    db: Annotated[Session, Depends(get_db)],
+    query: str = Form(...),
+    reviewer_enabled: bool = Form(default=True),
+    session_id: Optional[str] = Form(default=None),
+    dispatch_mode: str = Form(default="auto"),
+    image_file: UploadFile = File(...),
+) -> DispatchResponse:
+    filename = (image_file.filename or "").lower()
+    if not filename.endswith(".nii.gz"):
+        raise HTTPException(status_code=400, detail="Only .nii.gz uploads are supported.")
+
+    active_session_id = (session_id or "").strip() or str(uuid.uuid4())
+    session_root = Path(config.UPLOADS_DIR) / active_session_id
+    if session_root.exists():
+        shutil.rmtree(session_root)
+    session_root.mkdir(parents=True, exist_ok=True)
+
+    try:
+        temp_file_path = session_root / "incoming.nii.gz"
+        content_hash = _write_upload_and_hash(image_file, temp_file_path)
+        cache_dir, cached_file_path = _resolve_cache_paths(content_hash)
+        cache_hit = cached_file_path.exists() and cached_file_path.is_file()
+
+        if not cache_hit:
+            if cache_dir.exists():
+                shutil.rmtree(cache_dir)
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(temp_file_path), str(cached_file_path))
+        else:
+            temp_file_path.unlink(missing_ok=True)
+
+        extra_warnings = [
+            (
+                f"Upload cache hit: reused cached NIfTI file for sha256={content_hash[:12]}."
+                if cache_hit
+                else f"Upload cache miss: stored NIfTI file for sha256={content_hash[:12]}."
+            )
+        ]
+        return _execute_dispatch(
+            db=db,
+            query=query,
+            session_id=active_session_id,
+            image_path=str(cached_file_path),
+            reviewer_enabled=reviewer_enabled,
+            requested_mode=_normalize_dispatch_mode(dispatch_mode),
+            upload_present=True,
+            extra_warnings=extra_warnings,
+        )
+    finally:
+        await image_file.close()
+        shutil.rmtree(session_root, ignore_errors=True)
+
+
+@app.post(
     "/v1/jobs",
     response_model=JobSubmitResponse,
     status_code=202,
@@ -426,22 +706,13 @@ def submit_consult_job(
 ) -> JobSubmitResponse:
     session_id = (body.session_id or "").strip() or str(uuid.uuid4())
     image_path = (body.image_path or "").strip() or (config.DEFAULT_DICOM_DIR or "").strip() or None
-    job_id = str(uuid.uuid4())
-
-    row = ConsultationJobRecord(
-        id=job_id,
+    return _submit_job_record(
+        db=db,
         session_id=session_id,
         query=body.query,
         image_path=image_path,
         reviewer_enabled=body.reviewer_enabled,
-        status="queued",
     )
-    db.add(row)
-    db.commit()
-    _cache_job_status_snapshot(_build_job_status_response(row))
-
-    app.state.job_queue.submit(job_id)
-    return JobSubmitResponse(job_id=job_id, session_id=session_id, status="queued")
 
 
 @app.post(
@@ -482,7 +753,6 @@ async def submit_upload_job(
         else:
             temp_file_path.unlink(missing_ok=True)
 
-        job_id = str(uuid.uuid4())
         warnings = [
             (
                 f"Upload cache hit: reused cached NIfTI file for sha256={content_hash[:12]}."
@@ -490,21 +760,14 @@ async def submit_upload_job(
                 else f"Upload cache miss: stored NIfTI file for sha256={content_hash[:12]}."
             )
         ]
-        row = ConsultationJobRecord(
-            id=job_id,
+        return _submit_job_record(
+            db=db,
             session_id=active_session_id,
             query=query,
             image_path=str(cached_file_path),
             reviewer_enabled=reviewer_enabled,
-            status="queued",
-            warnings_json=_json_dumps(warnings),
+            warnings=warnings,
         )
-        db.add(row)
-        db.commit()
-        _cache_job_status_snapshot(_build_job_status_response(row))
-
-        app.state.job_queue.submit(job_id)
-        return JobSubmitResponse(job_id=job_id, session_id=active_session_id, status="queued")
     finally:
         await image_file.close()
         shutil.rmtree(session_root, ignore_errors=True)
@@ -621,3 +884,4 @@ def get_consultation(
         "has_preview": row.has_preview,
         "created_at": row.created_at.isoformat(),
     }
+

@@ -45,21 +45,17 @@ liver-rag/
 
 ## 核心流程
 
-系统主流程由 [agents/graph.py](C:/Users/21204/Desktop/liver-rag/agents/graph.py:1) 编排，采用“两阶段”流程：
+系统主流程采用“两阶段”设计：
 
-1. `collect / intake` 阶段：先记录用户本轮输入，结合会话上下文提炼已知信息，并生成后续追问建议
-2. 用户可在任意时刻继续补充信息，也可显式点击“生成报告”
-3. `report` 阶段：正式进入 LangGraph 工作流，执行意图分析、检索、感知、报告生成与审查
-4. 异步任务模式下，后台 worker 处理任务，事件总线通过内存版或 Redis pub/sub 分发 job / node 事件
+1. `collect / intake` 阶段：记录用户本轮输入，结合会话上下文提炼已知信息，并生成后续追问建议
+2. 用户可继续补充信息，也可在任意时刻显式触发正式报告生成
+3. `report` 阶段：进入 LangGraph 工作流，执行意图分析、检索、感知、报告生成与审查
+4. 当正式报告路径涉及影像感知推理时，系统更适合转入异步任务链路，并通过后台 worker、SSE 与事件总线反馈任务状态
 5. 会话上下文优先从 Redis 读取，Redis miss 时可由数据库中的 intake 记录与咨询记录恢复
 
-API 层由 [api/main.py](C:/Users/21204/Desktop/liver-rag/api/main.py:1) 提供，对外暴露统一 `dispatch` 入口、同步接口、异步任务接口、上传接口、历史记录和 SSE 能力。
-
-其中：
-
-- 推荐优先使用 `/v1/dispatch` 与 `/v1/dispatch/upload`
-- `dispatch` 的 `auto` 模式会复用共享 analyzer，根据 `intent`、`should_retrieve`、`should_perceive` 自动决定本次请求走同步还是异步
-- graph 中的 analyzer 节点与 API dispatch 共用同一套路由判断逻辑，避免 API 层和工作流层规则分叉
+API 层由 [api/main.py](C:/Users/21204/Desktop/liver-rag/api/main.py:1) 提供。
+当前推荐主入口为 `/v1/collect`、`/v1/collect/upload` 与 `/v1/report`：`collect` 负责 intake 采集，`report` 负责正式报告生成，并根据是否需要影像感知决定同步返回结果还是进入异步任务链路。
+`dispatch` 与 `dispatch/upload` 目前仍保留，主要作为兼容保留的自动分流入口。
 
 ## 运行方式
 
@@ -126,8 +122,8 @@ python scripts/run_graph_demo.py
 
 ## 主要模块
 
-- `api/`：FastAPI 路由、请求响应 schema、统一 dispatch、上传与 SSE 接口
-- `agents/routing.py`：共享的请求路由分析逻辑，供 API dispatch 与 graph analyzer 共用
+- `api/`：FastAPI 路由、请求响应 schema、intake / report 主流程、异步任务接口、上传接口与 SSE 接口
+- `agents/routing.py`：共享的轻量路由分析逻辑，用于正式报告阶段判断是否需要检索与影像感知
 - `agents/nodes.py`：LangGraph 节点执行逻辑
 - `agents/graph.py`：工作流编排结构
 - `services/`：`LiverSmartAgent` 封装、任务队列、事件总线
@@ -174,6 +170,9 @@ tests/
 - `agents.graph` 路由分支测试
 - `services.job_events.JobEventBus`
 - `/health`
+- `/v1/collect`
+- `/v1/collect/upload`
+- `/v1/report`
 - `/v1/dispatch`
 - `/v1/dispatch/upload`
 - `/v1/consult`

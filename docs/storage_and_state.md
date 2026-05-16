@@ -194,8 +194,6 @@ liver:search:{digest}
 4. 恢复来源是 `intake_messages + consultations`
 5. 恢复完再写回 Redis
 
-这意味着：
-
 - Redis 存的是“最近几轮上下文缓存”
 - 数据库存的是“可恢复的历史记录”
 
@@ -203,7 +201,7 @@ liver:search:{digest}
 
 ## 5. 最终结果到底存在哪里
 
-这个问题也很容易绕晕，因为同步和异步路径略有不同。
+同步和异步路径略有不同。
 
 ### 同步情况下
 
@@ -231,14 +229,12 @@ liver:search:{digest}
 
 同时，正式报告本身也会写入 `consultations`，并把 `consultation_id` 回填到 job 记录里。
 
-所以异步路径下可以这样记：
+即：
 
 - `consultation_jobs`：任务视角的结果
 - `consultations`：业务视角的正式结果
 
-## 6. `job_event_bus` 和 Redis 不是一回事
-
-这个地方最容易概念打架。
+## 6. `job_event_bus` 和 Redis
 
 `job_event_bus` 的职责是发事件，不是存业务数据。
 
@@ -262,8 +258,6 @@ liver:search:{digest}
 - Redis KV 负责“缓存”
 - 数据库负责“持久化”
 
-不要把这三件事混成一件事。
-
 ## 7. 上传文件和磁盘缓存
 
 除了数据库和 Redis，这个项目还有文件层的数据。
@@ -277,7 +271,7 @@ liver:search:{digest}
 5. 没有就移动到缓存目录
 6. 请求结束后清理临时目录
 
-所以图像本体不是存在 Redis 里，也不是存在数据库里，而是落在磁盘目录里。
+所以图像本体不是存在 Redis 里，也不是存在数据库里，而是落在磁盘目录里。（nii太大了）
 
 这里也能看出当前系统是分层存储的：
 
@@ -293,7 +287,7 @@ liver:search:{digest}
 
 - 写入 `intake_messages`
 - 更新 Redis 里的 `session_context`
-- 必要时复用历史 `latest_image_path`
+- 必要时复用历史 `latest_image_path`（session表的一个字段）
 
 ### `report`
 
@@ -310,24 +304,17 @@ liver:search:{digest}
 主要会发生这些事：
 
 - 插入 `consultation_jobs`
-- 更新 Redis `job_status`
+- 更新 Redis `job_status`（其实jobstatus也是从consultations_jobs里转录出来的）
 - 发布任务事件
 - 后台 worker 执行
 - 完成后写回 `consultation_jobs`
 - 成功时也写入 `consultations`
 
-## 9. 现在最实用的记忆方式
+## 9. 总结
 
-如果只是为了快速不混淆，可以直接这样记：
-
-- `intake_messages`：前面聊了什么
-- `consultations`：最后正式报告是什么
+- `intake_messages`：多轮对话记忆
+- `consultations`：正式报告列表
 - `consultation_jobs`：异步任务是怎么跑的、结果怎样
 - `session_context`：Redis 里的最近几轮上下文
 - `job_status`：Redis 里的任务状态缓存
-- `job_event_bus / PubSub / SSE`：只负责实时通知
-
-## 10. 一句话版本
-
-这个项目里，长期业务记录主要在数据库，Redis 主要负责缓存最近状态，事件总线负责实时通知，图像文件本体放在磁盘。  
-`consultations` 不是用来替代 `consultation_jobs` 的，它们分别偏向“正式结果存档”和“异步任务过程追踪”。
+- `job_event_bus / PubSub / SSE`：实时通知......

@@ -45,3 +45,30 @@ Notes:
 
 - `deselected` means 12 tests were intentionally not run because the `-k` filter only selected matching cases; this is not an error.
 - Warnings included `pkg_resources` / `Setuptools<81` related output and did not fail the test run.
+
+## 2026-05-16 Dispatch Update
+
+Command:
+
+```bash
+pytest tests/unit/test_routing.py tests/integration/test_api.py
+```
+
+Result:
+
+- Added test coverage for dispatch routing and shared analyzer behavior.
+- Execution was validated in the local user environment after the code update.
+
+Current added coverage:
+
+- Unit: `agents.routing.analyze_intent_routing` fallback behavior without `LLM_API_KEY`
+- Unit: `agents.routing.analyze_intent_routing` parsing of analyzer LLM output
+- Integration: `/v1/dispatch` auto mode returning synchronous results
+- Integration: `/v1/dispatch` auto mode creating asynchronous jobs when perception is required
+- Integration: `/v1/dispatch` forced `sync` override
+- Integration: `/v1/dispatch/upload` auto mode with uploaded `.nii.gz`
+
+Notes:
+
+- Dispatch and graph analyzer now share the same routing logic via [`agents/routing.py`](C:/Users/21204/Desktop/liver-rag/agents/routing.py:1).
+- The new tests are intended to lock sync/async dispatch behavior to the shared analyzer output rather than API-only keyword heuristics.

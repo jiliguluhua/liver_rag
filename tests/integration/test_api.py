@@ -94,6 +94,173 @@ def test_consult_endpoint_returns_mocked_response(monkeypatch, tmp_path):
     assert payload["intent"] == "clinical"
 
 
+def test_dispatch_endpoint_returns_sync_result_in_auto_mode(monkeypatch, tmp_path):
+    client, _session = _make_client(monkeypatch, tmp_path)
+
+    monkeypatch.setattr(
+        api_main,
+        "analyze_intent_routing",
+        lambda query, image_path: {
+            "intent": "education",
+            "should_retrieve": True,
+            "should_perceive": False,
+            "routing_mode": "llm",
+            "warnings": [],
+            "errors": [],
+        },
+    )
+
+    def fake_run_consultation(**kwargs):
+        return api_main.ConsultResponse(
+            report="dispatch sync report",
+            preview_image_base64=None,
+            consultation_id=11,
+            session_id=kwargs["session_id"],
+            status="completed",
+            intent="education",
+            perception_status="skipped",
+            warnings=[],
+            errors=[],
+            evidence=[],
+            trace=[],
+        )
+
+    monkeypatch.setattr(api_main, "_run_consultation", fake_run_consultation)
+
+    response = client.post(
+        "/v1/dispatch",
+        params={"dispatch_mode": "auto"},
+        json={"query": "summarize guideline follow-up", "reviewer_enabled": True},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["mode"] == "sync"
+    assert payload["result"]["report"] == "dispatch sync report"
+    assert payload["job"] is None
+
+
+def test_dispatch_endpoint_returns_job_in_auto_mode_when_perception_needed(monkeypatch, tmp_path):
+    client, TestingSessionLocal = _make_client(monkeypatch, tmp_path)
+
+    monkeypatch.setattr(
+        api_main,
+        "analyze_intent_routing",
+        lambda query, image_path: {
+            "intent": "clinical",
+            "should_retrieve": True,
+            "should_perceive": True,
+            "routing_mode": "llm",
+            "warnings": [],
+            "errors": [],
+        },
+    )
+
+    response = client.post(
+        "/v1/dispatch",
+        params={"dispatch_mode": "auto"},
+        json={
+            "query": "analyze lesion volume",
+            "image_path": "/tmp/scan.nii.gz",
+            "reviewer_enabled": True,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["mode"] == "async"
+    assert payload["job"]["status"] == "queued"
+    assert api_main.app.state.job_queue.submitted == [payload["job"]["job_id"]]
+
+    db = TestingSessionLocal()
+    try:
+        row = db.get(ConsultationJobRecord, payload["job"]["job_id"])
+        assert row is not None
+        assert "auto dispatch selected async" in row.warnings_json.lower()
+    finally:
+        db.close()
+
+
+def test_dispatch_endpoint_honors_forced_sync(monkeypatch, tmp_path):
+    client, _session = _make_client(monkeypatch, tmp_path)
+
+    monkeypatch.setattr(
+        api_main,
+        "analyze_intent_routing",
+        lambda query, image_path: {
+            "intent": "clinical",
+            "should_retrieve": True,
+            "should_perceive": True,
+            "routing_mode": "llm",
+            "warnings": [],
+            "errors": [],
+        },
+    )
+
+    def fake_run_consultation(**kwargs):
+        return api_main.ConsultResponse(
+            report="forced sync report",
+            preview_image_base64=None,
+            consultation_id=12,
+            session_id=kwargs["session_id"],
+            status="completed",
+            intent="clinical",
+            perception_status="completed",
+            warnings=[],
+            errors=[],
+            evidence=[],
+            trace=[],
+        )
+
+    monkeypatch.setattr(api_main, "_run_consultation", fake_run_consultation)
+
+    response = client.post(
+        "/v1/dispatch",
+        params={"dispatch_mode": "sync"},
+        json={
+            "query": "analyze lesion volume",
+            "image_path": "/tmp/scan.nii.gz",
+            "reviewer_enabled": True,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["mode"] == "sync"
+    assert payload["result"]["report"] == "forced sync report"
+    assert payload["job"] is None
+
+
+def test_dispatch_upload_returns_async_job_when_auto_mode_needs_perception(monkeypatch, tmp_path):
+    client, _session = _make_client(monkeypatch, tmp_path)
+
+    monkeypatch.setattr(api_main.config, "UPLOADS_DIR", str(tmp_path / "uploads"))
+    monkeypatch.setattr(api_main.config, "UPLOAD_CACHE_DIR", str(tmp_path / "upload_cache"))
+    monkeypatch.setattr(
+        api_main,
+        "analyze_intent_routing",
+        lambda query, image_path: {
+            "intent": "clinical",
+            "should_retrieve": True,
+            "should_perceive": True,
+            "routing_mode": "llm",
+            "warnings": [],
+            "errors": [],
+        },
+    )
+
+    response = client.post(
+        "/v1/dispatch/upload",
+        data={"query": "analyze uploaded nifti", "reviewer_enabled": "true", "dispatch_mode": "auto"},
+        files={"image_file": ("scan.nii.gz", b"fake-nifti-content", "application/gzip")},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["mode"] == "async"
+    assert payload["job"]["status"] == "queued"
+
+
 def test_submit_job_persists_record_and_queues_task(monkeypatch, tmp_path):
     client, TestingSessionLocal = _make_client(monkeypatch, tmp_path)
 

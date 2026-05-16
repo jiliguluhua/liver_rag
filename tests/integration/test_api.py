@@ -8,7 +8,7 @@ from sqlalchemy.orm import sessionmaker
 
 from api import main as api_main
 from core.database import Base
-from core.models import ConsultationJobRecord, ConsultationRecord
+from core.models import ConsultationJobRecord, ConsultationRecord, IntakeMessageRecord
 
 
 class DummyQueue:
@@ -99,6 +99,16 @@ def test_collect_endpoint_returns_follow_up_questions(monkeypatch, tmp_path):
 
     monkeypatch.setattr(api_main.redis_store, "get_session_context", lambda session_id: None)
     monkeypatch.setattr(api_main.redis_store, "set_session_context", lambda session_id, payload: None)
+    monkeypatch.setattr(
+        api_main,
+        "_llm_collect_analysis",
+        lambda **kwargs: {
+            "assistant_message": "已记录 intake，可直接生成报告。",
+            "follow_up_questions": ["请补充症状", "请补充病史"],
+            "readiness_reasons": ["建议补充检查结果以提高报告质量。"],
+            "readiness_mode": "llm",
+        },
+    )
 
     response = client.post(
         "/v1/collect",
@@ -110,7 +120,10 @@ def test_collect_endpoint_returns_follow_up_questions(monkeypatch, tmp_path):
     assert payload["session_id"]
     assert payload["assistant_message"]
     assert payload["follow_up_questions"]
-    assert payload["can_generate_report"] is False
+    assert payload["can_generate_report"] is True
+    assert payload["readiness_mode"] == "llm"
+    assert payload["readiness_reasons"]
+    assert payload["collected_context"]["recent_turns"]
 
 
 def test_dispatch_endpoint_returns_sync_result_in_auto_mode(monkeypatch, tmp_path):
@@ -633,6 +646,42 @@ def test_report_endpoint_uses_cached_session_image_path(monkeypatch, tmp_path):
 
     assert response.status_code == 200
     assert captured_image_path == "/cached/image.nii.gz"
+
+
+def test_collect_endpoint_persists_turns_across_requests(monkeypatch, tmp_path):
+    client, TestingSessionLocal = _make_client(monkeypatch, tmp_path)
+
+    monkeypatch.setattr(
+        api_main,
+        "_llm_collect_analysis",
+        lambda **kwargs: {
+            "assistant_message": "已记录 intake，可继续补充或直接生成报告。",
+            "follow_up_questions": ["请补充症状"],
+            "readiness_reasons": ["可继续补充更多细节。"],
+            "readiness_mode": "deepseek-chat",
+        },
+    )
+
+    response1 = client.post(
+        "/v1/collect",
+        json={"query": "第一轮 intake", "session_id": "session-persist", "reviewer_enabled": True},
+    )
+    response2 = client.post(
+        "/v1/collect",
+        json={"query": "第二轮 intake", "session_id": "session-persist", "reviewer_enabled": True},
+    )
+
+    assert response1.status_code == 200
+    assert response2.status_code == 200
+    assert response1.json()["context_turn_count"] == 1
+    assert response2.json()["context_turn_count"] >= 2
+
+    db = TestingSessionLocal()
+    try:
+        rows = db.query(IntakeMessageRecord).filter(IntakeMessageRecord.session_id == "session-persist").all()
+        assert len(rows) == 2
+    finally:
+        db.close()
 
 
 def test_job_events_stream_returns_error_for_missing_job(monkeypatch, tmp_path):

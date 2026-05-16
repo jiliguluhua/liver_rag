@@ -17,6 +17,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, StreamingResponse
 from PIL import Image
 from sqlalchemy.orm import Session
+from langchain_openai import ChatOpenAI
 
 from api.schemas import (
     ConsultRequest,
@@ -32,7 +33,7 @@ from api.schemas import (
 )
 from core import config
 from core.database import SessionLocal, get_db, init_db
-from core.models import ConsultationJobRecord, ConsultationRecord
+from core.models import ConsultationJobRecord, ConsultationRecord, IntakeMessageRecord
 from agents.routing import analyze_intent_routing
 from services.job_events import job_event_bus
 from services.job_queue import InMemoryJobQueue
@@ -41,12 +42,25 @@ from services.redis_store import redis_store
 
 
 WEB_INDEX_PATH = Path(__file__).resolve().parent.parent / "web" / "index.html"
+_intake_llm: Optional[ChatOpenAI] = None
 
 
 def _pil_to_png_b64(img: Image.Image) -> str:
     buf = io.BytesIO()
     img.save(buf, format="PNG")
     return base64.standard_b64encode(buf.getvalue()).decode("ascii")
+
+
+def _get_intake_llm() -> ChatOpenAI:
+    global _intake_llm
+    if _intake_llm is None:
+        _intake_llm = ChatOpenAI(
+            model=config.LLM_MODEL_NAME,
+            openai_api_key=config.LLM_API_KEY,
+            openai_api_base=config.LLM_BASE_URL,
+            temperature=0.2,
+        )
+    return _intake_llm
 
 
 def _optional_service_auth(
@@ -219,6 +233,26 @@ def _build_session_context_payload(rows: list[ConsultationRecord]) -> dict:
     }
 
 
+def _build_session_context_payload_from_turns(turns: list[dict]) -> dict:
+    summary = "No prior session context available."
+    if turns:
+        summary = " | ".join(
+            f"Q: {str(turn.get('query', ''))[:80]} A: {str(turn.get('report', ''))[:120]}"
+            for turn in turns
+        )
+    latest_image_path = None
+    for turn in reversed(turns):
+        image_path = turn.get("image_path")
+        if image_path:
+            latest_image_path = str(image_path)
+            break
+    return {
+        "session_summary": summary,
+        "recent_turns": turns,
+        "latest_image_path": latest_image_path,
+    }
+
+
 def _normalize_session_context(payload: Optional[dict]) -> dict:
     context = payload.copy() if isinstance(payload, dict) else {}
     recent_turns = context.get("recent_turns")
@@ -229,31 +263,59 @@ def _normalize_session_context(payload: Optional[dict]) -> dict:
     return context
 
 
-def _load_session_context(db: Session, session_id: str) -> dict:
-    cached = redis_store.get_session_context(session_id)
-    if cached is not None:
-        return _normalize_session_context(cached)
-    rows = (
+def _load_session_context_from_db(db: Session, session_id: str) -> dict:
+    intake_rows = (
+        db.query(IntakeMessageRecord)
+        .filter(IntakeMessageRecord.session_id == session_id)
+        .order_by(IntakeMessageRecord.created_at.desc())
+        .limit(config.SESSION_CONTEXT_MAX_TURNS)
+        .all()
+    )
+    consult_rows = (
         db.query(ConsultationRecord)
         .filter(ConsultationRecord.session_id == session_id)
         .order_by(ConsultationRecord.created_at.desc())
         .limit(config.SESSION_CONTEXT_MAX_TURNS)
         .all()
     )
-    payload = _build_session_context_payload(rows)
+    turns: list[dict] = []
+    for row in intake_rows:
+        turns.append(
+            {
+                "query": row.query,
+                "report": row.assistant_message,
+                "created_at": row.created_at.isoformat(),
+                "image_path": row.image_path,
+                "stage": "collect",
+            }
+        )
+    for row in consult_rows:
+        turns.append(
+            {
+                "consultation_id": row.id,
+                "query": row.query,
+                "report": row.report,
+                "created_at": row.created_at.isoformat(),
+                "image_path": row.image_path,
+                "stage": "report",
+            }
+        )
+    turns.sort(key=lambda item: str(item.get("created_at", "")))
+    max_turns = max(config.SESSION_CONTEXT_MAX_TURNS, 1)
+    return _build_session_context_payload_from_turns(turns[-max_turns:])
+
+
+def _load_session_context(db: Session, session_id: str) -> dict:
+    cached = redis_store.get_session_context(session_id)
+    if cached is not None:
+        return _normalize_session_context(cached)
+    payload = _load_session_context_from_db(db, session_id)
     redis_store.set_session_context(session_id, payload)
     return _normalize_session_context(payload)
 
 
 def _refresh_session_context_cache(db: Session, session_id: str) -> dict:
-    rows = (
-        db.query(ConsultationRecord)
-        .filter(ConsultationRecord.session_id == session_id)
-        .order_by(ConsultationRecord.created_at.desc())
-        .limit(config.SESSION_CONTEXT_MAX_TURNS)
-        .all()
-    )
-    payload = _build_session_context_payload(rows)
+    payload = _load_session_context_from_db(db, session_id)
     redis_store.set_session_context(session_id, payload)
     return _normalize_session_context(payload)
 
@@ -264,6 +326,26 @@ def _save_session_context(session_id: str, payload: dict) -> dict:
     return normalized
 
 
+def _save_intake_message(
+    db: Session,
+    *,
+    session_id: str,
+    query: str,
+    assistant_message: str,
+    image_path: Optional[str],
+) -> IntakeMessageRecord:
+    row = IntakeMessageRecord(
+        session_id=session_id,
+        query=query,
+        assistant_message=assistant_message,
+        image_path=image_path,
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
 def _update_session_context_for_collect(
     *,
     db: Session,
@@ -272,31 +354,119 @@ def _update_session_context_for_collect(
     assistant_message: str,
     image_path: Optional[str],
 ) -> dict:
+    _save_intake_message(
+        db,
+        session_id=session_id,
+        query=query,
+        assistant_message=assistant_message,
+        image_path=image_path,
+    )
     context = _load_session_context(db, session_id)
-    recent_turns = list(context.get("recent_turns", []))
-    recent_turns.append(
-        {
-            "query": query,
-            "report": assistant_message,
-            "created_at": datetime.utcnow().isoformat(),
-            "image_path": image_path,
-            "stage": "collect",
-        }
-    )
-    max_turns = max(config.SESSION_CONTEXT_MAX_TURNS, 1)
-    trimmed_turns = recent_turns[-max_turns:]
-    summary = " | ".join(
-        f"Q: {str(turn.get('query', ''))[:80]} A: {str(turn.get('report', ''))[:120]}"
-        for turn in trimmed_turns
-    )
+    latest_image_path = image_path or context.get("latest_image_path")
     return _save_session_context(
         session_id,
         {
-            "session_summary": summary or "No prior session context available.",
-            "recent_turns": trimmed_turns,
-            "latest_image_path": image_path or context.get("latest_image_path"),
+            "session_summary": context.get("session_summary", ""),
+            "recent_turns": context.get("recent_turns", []),
+            "latest_image_path": latest_image_path,
         },
     )
+
+
+def _fallback_collect_analysis(
+    *,
+    query: str,
+    effective_image_path: Optional[str],
+    prior_turns: list[dict],
+) -> dict:
+    follow_up_questions = [
+        "请补充患者的核心症状、持续时间，以及是否有近期加重。",
+        "请说明已有检查结果、肝病史、治疗史，或医生最关心的判断目标。",
+    ]
+    if not effective_image_path:
+        follow_up_questions.append("如果需要结合影像判断，请提供 NIfTI 路径或上传 .nii.gz 文件。")
+    suggestions: list[str] = []
+    if not effective_image_path:
+        suggestions.append("当前未提供影像，若问题依赖病灶定位或分割结果，建议补充 NIfTI。")
+    if len(query) < 40:
+        suggestions.append("当前描述偏短，建议补充症状、病史或检查结果。")
+    if not prior_turns:
+        suggestions.append("这是当前 session 的首轮 intake，建议至少补充一轮关键信息。")
+    assistant_message = (
+        "我已经记录本轮 intake。你现在就可以直接生成报告；如果先补充更多信息，结果通常会更稳。"
+    )
+    return {
+        "assistant_message": assistant_message,
+        "follow_up_questions": follow_up_questions,
+        "readiness_mode": "fallback",
+        "readiness_reasons": suggestions or ["当前信息已记录，可直接生成报告。"],
+    }
+
+
+def _llm_collect_analysis(
+    *,
+    query: str,
+    effective_image_path: Optional[str],
+    prior_turns: list[dict],
+    session_summary: str,
+) -> dict:
+    if not config.LLM_API_KEY:
+        return _fallback_collect_analysis(
+            query=query,
+            effective_image_path=effective_image_path,
+            prior_turns=prior_turns,
+        )
+    prompt = f"""
+You are a medical intake assistant for liver-related consultation.
+Your job is to summarize what has been collected so far and suggest what to ask next.
+Do NOT block report generation. The user may generate a report at any time.
+
+Return valid JSON with this shape:
+{{
+  "assistant_message": "short Chinese message",
+  "follow_up_questions": ["question 1", "question 2", "question 3"],
+  "readiness_reasons": ["suggestion 1", "suggestion 2"]
+}}
+
+Rules:
+- assistant_message should say the intake was recorded and report can be generated now, but more details may improve quality.
+- follow_up_questions should be concise Chinese questions, at most 3.
+- readiness_reasons should be advisory suggestions, not hard gate rules.
+- If image path is missing, one suggestion or question may mention that imaging can be added if needed.
+
+Current user input:
+{query}
+
+Current session summary:
+{session_summary or "No prior session context available."}
+
+Prior turn count: {len(prior_turns)}
+Image path available: {"yes" if effective_image_path else "no"}
+"""
+    try:
+        raw = _get_intake_llm().invoke(prompt).content.strip()
+        data = json.loads(raw)
+        if not isinstance(data, dict):
+            raise ValueError("collect analysis response is not an object")
+        follow_up_questions = data.get("follow_up_questions", [])
+        readiness_reasons = data.get("readiness_reasons", [])
+        return {
+            "assistant_message": str(
+                data.get(
+                    "assistant_message",
+                    "我已经记录本轮 intake。你现在可以直接生成报告，也可以先补充更多信息。",
+                )
+            ),
+            "follow_up_questions": [str(item) for item in follow_up_questions][:3] if isinstance(follow_up_questions, list) else [],
+            "readiness_reasons": [str(item) for item in readiness_reasons][:4] if isinstance(readiness_reasons, list) else [],
+            "readiness_mode": config.LLM_MODEL_NAME or "llm",
+        }
+    except Exception:
+        return _fallback_collect_analysis(
+            query=query,
+            effective_image_path=effective_image_path,
+            prior_turns=prior_turns,
+        )
 
 
 def _build_collect_response(
@@ -309,17 +479,18 @@ def _build_collect_response(
     context = _load_session_context(db, session_id)
     prior_turns = context.get("recent_turns", [])
     effective_image_path = (image_path or context.get("latest_image_path") or "").strip() or None
-    follow_up_questions = [
-        "请补充患者的核心症状、持续时间，以及是否有近期加重。",
-        "请说明已有检查结果、肝病史、治疗史，或医生最关心的判断目标。",
-    ]
-    if not effective_image_path:
-        follow_up_questions.append("如果需要结合影像判断，请提供 NIfTI 路径或上传 .nii.gz 文件。")
-    can_generate_report = bool(effective_image_path) or len(prior_turns) >= 1 or len(query) >= 60
-    assistant_message = (
-        "我先继续收集关键信息，再生成正式报告会更稳妥。"
-        if not can_generate_report
-        else "当前信息已经可以尝试生成正式报告；如果你愿意，也可以先再补充一轮信息。"
+    analysis = _llm_collect_analysis(
+        query=query,
+        effective_image_path=effective_image_path,
+        prior_turns=prior_turns,
+        session_summary=str(context.get("session_summary", "")),
+    )
+    can_generate_report = True
+    assistant_message = str(
+        analysis.get(
+            "assistant_message",
+            "我已经记录本轮 intake。你现在可以直接生成报告，也可以先补充更多信息。",
+        )
     )
     updated_context = _update_session_context_for_collect(
         db=db,
@@ -331,10 +502,13 @@ def _build_collect_response(
     return CollectResponse(
         session_id=session_id,
         assistant_message=assistant_message,
-        follow_up_questions=follow_up_questions,
+        follow_up_questions=list(analysis.get("follow_up_questions", [])),
         can_generate_report=can_generate_report,
+        readiness_mode=str(analysis.get("readiness_mode", "fallback")),
+        readiness_reasons=list(analysis.get("readiness_reasons", [])),
         context_turn_count=len(updated_context.get("recent_turns", [])),
         latest_image_path=updated_context.get("latest_image_path"),
+        collected_context=updated_context,
     )
 
 

@@ -43,3 +43,14 @@ class ConsultationJobRecord(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
     started_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
+class IntakeMessageRecord(Base):
+    __tablename__ = "intake_messages"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    session_id: Mapped[str] = mapped_column(String(36), index=True)
+    query: Mapped[str] = mapped_column(Text)
+    assistant_message: Mapped[str] = mapped_column(Text)
+    image_path: Mapped[Optional[str]] = mapped_column(String(2048), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)

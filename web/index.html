@@ -324,6 +324,11 @@
     </section>
 
     <section class="panel">
+      <h2>Intake Context</h2>
+      <div id="intakeBox" class="mono">No intake context yet.</div>
+    </section>
+
+    <section class="panel">
       <h2>Evidence</h2>
       <div id="evidenceBox" class="mono">None.</div>
     </section>
@@ -354,8 +359,10 @@
     const jobBox = document.getElementById("jobBox");
     const stageBox = document.getElementById("stageBox");
     const warningsBox = document.getElementById("warningsBox");
+    const intakeBox = document.getElementById("intakeBox");
     const evidenceBox = document.getElementById("evidenceBox");
     const traceBox = document.getElementById("traceBox");
+    const SESSION_STORAGE_KEY = "liversmart-session-id";
     let activeJobEventSource = null;
     let currentSessionId = "";
     let lastCollectPayload = null;
@@ -373,6 +380,12 @@
       uploadMetaEl.textContent = `Selected ${file.name} (${sizeMb} MB).`;
     });
 
+    const savedSessionId = window.localStorage.getItem(SESSION_STORAGE_KEY);
+    if (savedSessionId) {
+      currentSessionId = savedSessionId;
+      sessionIdEl.value = savedSessionId;
+    }
+
     clearBtn.addEventListener("click", () => {
       queryEl.value = "";
       sessionIdEl.value = "";
@@ -387,11 +400,13 @@
       jobBox.textContent = "No job yet.";
       stageBox.textContent = "No stage activity yet.";
       warningsBox.textContent = "None.";
+      intakeBox.textContent = "No intake context yet.";
       evidenceBox.textContent = "None.";
       traceBox.textContent = "None.";
       previewBox.innerHTML = "No preview yet.";
       closeActiveJobEventSource();
       currentSessionId = "";
+      window.localStorage.removeItem(SESSION_STORAGE_KEY);
       lastCollectPayload = null;
       generateBtn.disabled = true;
       liveTraceItems = [];
@@ -732,6 +747,9 @@
 
       const warnings = payload.warnings || [];
       warningsBox.textContent = warnings.length ? warnings.join("\n") : "None.";
+      if (lastCollectPayload && lastCollectPayload.collected_context) {
+        intakeBox.textContent = formatCollectedContext(lastCollectPayload);
+      }
 
       const evidence = payload.evidence || [];
       evidenceBox.innerHTML = evidence.length
@@ -763,19 +781,29 @@
       lastCollectPayload = payload;
       currentSessionId = payload.session_id || currentSessionId;
       sessionIdEl.value = currentSessionId;
+      if (currentSessionId) {
+        window.localStorage.setItem(SESSION_STORAGE_KEY, currentSessionId);
+      }
       if (payload.latest_image_path && !imagePathEl.value.trim()) {
         imagePathEl.value = payload.latest_image_path;
       }
       generateBtn.disabled = !payload.can_generate_report;
-      parallelHintEl.textContent = `Intake turns cached: ${payload.context_turn_count || 0}`;
+      parallelHintEl.textContent = `Intake turns cached: ${payload.context_turn_count || 0} | readiness: ${payload.readiness_mode || "unknown"}`;
       const followUps = payload.follow_up_questions || [];
       reportBox.textContent = [
         payload.assistant_message || "No assistant message.",
+        "",
+        "Can generate report:",
+        payload.can_generate_report ? "yes" : "no",
+        "",
+        "Readiness reasons:",
+        ...((payload.readiness_reasons || []).length ? payload.readiness_reasons.map((item, idx) => `${idx + 1}. ${item}`) : ["None."]),
         "",
         "Follow-up questions:",
         ...(followUps.length ? followUps.map((item, idx) => `${idx + 1}. ${item}`) : ["None."]),
       ].join("\n");
       warningsBox.textContent = "None.";
+      intakeBox.textContent = formatCollectedContext(payload);
       evidenceBox.textContent = "None.";
       traceBox.textContent = "None.";
       previewBox.textContent = "No preview yet.";
@@ -785,6 +813,31 @@
         `Latest image path: ${payload.latest_image_path || "-"}`,
       ].join("\n");
       stageBox.textContent = "collect: completed | Intake updated";
+    }
+
+    function formatCollectedContext(payload) {
+      const context = payload.collected_context || {};
+      const turns = Array.isArray(context.recent_turns) ? context.recent_turns : [];
+      const lines = [
+        `Session ID: ${payload.session_id || "-"}`,
+        `Readiness mode: ${payload.readiness_mode || "-"}`,
+        `Can generate report: ${payload.can_generate_report ? "yes" : "no"}`,
+        `Latest image path: ${payload.latest_image_path || "-"}`,
+        `Session summary: ${context.session_summary || "-"}`,
+        "",
+        "Collected turns:",
+      ];
+      if (!turns.length) {
+        lines.push("None.");
+      } else {
+        turns.forEach((turn, idx) => {
+          lines.push(`${idx + 1}. stage=${turn.stage || "history"} time=${turn.created_at || "-"}`);
+          lines.push(`   user: ${turn.query || "-"}`);
+          lines.push(`   assistant: ${turn.report || "-"}`);
+          lines.push(`   image_path: ${turn.image_path || "-"}`);
+        });
+      }
+      return lines.join("\n");
     }
 
     function escapeHtml(text) {

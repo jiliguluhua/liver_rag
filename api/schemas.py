@@ -97,5 +97,8 @@ class CollectResponse(BaseModel):
     assistant_message: str
     follow_up_questions: list[str] = Field(default_factory=list)
     can_generate_report: bool
+    readiness_mode: str = "rule_based"
+    readiness_reasons: list[str] = Field(default_factory=list)
     context_turn_count: int = 0
     latest_image_path: Optional[str] = None
+    collected_context: dict[str, Any] = Field(default_factory=dict)

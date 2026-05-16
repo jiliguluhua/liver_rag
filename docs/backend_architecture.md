@@ -5,7 +5,7 @@ flowchart LR
     User[用户 / 调用方]
     Frontend[前端界面<br/>Streamlit / index.html]
     API[FastAPI 接口层]
-    TaskSystem[任务系统<br/>队列 / Worker / SSE]
+    TaskSystem[任务系统<br/>队列 / Worker / SSE / Redis PubSub]
     Agent[Agent 工作流]
     Reasoning[检索与感知<br/>FAISS / BM25 / MONAI]
     LLM[LLM 服务]
@@ -84,6 +84,7 @@ sequenceDiagram
     participant Queue as InMemoryJobQueue
     participant Worker as 后台 Worker
     participant Bus as JobEventBus
+    participant Redis as Redis Pub/Sub
     participant SSE as SSE 接口
     participant Agent as LiverSmartAgent
 
@@ -99,12 +100,14 @@ sequenceDiagram
     Queue-->>Worker: 返回 job_id
     Worker->>DB: 更新 job 为 running
     Worker->>Bus: 发布 job_update
+    Bus->>Redis: 发布任务事件（启用 Redis 时）
     Worker->>Agent: 执行咨询工作流
     Agent-->>Worker: 返回 report, preview, trace
     Worker->>DB: 写入 consultation 记录
     Worker->>DB: 更新 job 为 completed
     Worker->>Bus: 发布 job_completed
-    Bus-->>SSE: 推送 job / node 事件
+    Bus->>Redis: 发布完成事件（启用 Redis 时）
+    Redis-->>SSE: 跨进程分发 job / node 事件
     SSE-->>Client: 实时更新任务状态
 ```
 
@@ -158,14 +161,23 @@ flowchart TD
     A[后台任务执行] --> B[发布 job_update]
     A --> C[发布 node_update]
     A --> D[发布 job_completed / job_failed]
+
     B --> E[JobEventBus]
     C --> E
     D --> E
-    E --> F[SSE 任务事件接口]
-    F --> G[前端 Job 面板]
-    F --> H[前端 Stage Status]
-    F --> I[前端 Trace 实时更新]
-    F --> J[Streamlit 状态展示]
+
+    E --> F{事件总线实现}
+    F -->|本地开发| G[InMemoryJobEventBus]
+    F -->|部署启用 Redis| H[RedisJobEventBus / Redis PubSub]
+
+    G --> I[SSE 任务事件接口]
+    H --> I
+
+    I --> J[前端 Job 面板]
+    I --> K[前端 Stage Status]
+    I --> L[前端 Trace 实时更新]
+    I --> M[Streamlit 状态展示]
+
 ```
 
 当前前端能实时看到的内容包括：
@@ -174,6 +186,13 @@ flowchart TD
 - 当前正在执行的节点
 - 各节点状态面板
 - trace 流式更新
+
+当前任务事件流采用可切换的事件总线实现：
+
+- 本地开发默认使用内存版 JobEventBus
+- 配置 `LIVER_REDIS_URL` 后可切换为基于 Redis pub/sub 的事件分发
+- SSE 接口统一消费事件并推送到前端，因此前端侧无需区分底层实现
+- 该设计主要用于跨进程的 job / node 事件推送，不影响现有文件缓存与任务队列实现
 
 ## 8. 持久化模型（仅展示核心字段）
 

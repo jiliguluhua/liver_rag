@@ -1,26 +1,58 @@
 # API 接口文档
 
-鉴权方式：
+## 接口目录
+
+### 核心主流程接口
+
+- `GET /`
+- `GET /health`
+- `POST /v1/collect`
+- `POST /v1/collect/upload`
+- `POST /v1/report`
+- `GET /v1/consultations`
+- `GET /v1/consultations/{consultation_id}`
+
+### 异步能力接口
+
+- `POST /v1/jobs`
+- `POST /v1/jobs/upload`
+- `GET /v1/jobs/{job_id}`
+- `GET /v1/jobs/{job_id}/events`
+
+### 兼容保留接口
+
+- `POST /v1/consult`
+- `POST /v1/consult/upload`
+- `POST /v1/dispatch`
+- `POST /v1/dispatch/upload`
+
+## 认证方式
 
 - 当配置了 `LIVER_SERVICE_API_KEY` 时，受保护接口需要在请求头中携带 `X-API-Key`
 - 当未配置服务鉴权 key 时，可直接访问接口
 
 支持的内容类型：
 
-- `application/json`：标准咨询与任务提交接口
+- `application/json`：标准文本请求接口
 - `multipart/form-data`：上传类接口
 - `text/event-stream`：SSE 任务事件流接口
 
-推荐调用方式：
+## 当前推荐调用方式
 
-- 推荐优先使用统一 dispatch 入口：
-  - `POST /v1/dispatch`
-  - `POST /v1/dispatch/upload`
-- `dispatch` 支持 `auto`、`sync`、`async` 三种模式：
-  - `auto`：由后端共享 analyzer 自动决定同步或异步执行
-  - `sync`：强制同步执行
-  - `async`：强制异步执行
-- `POST /v1/consult`、`POST /v1/jobs` 及其 upload 版本仍然保留，用于显式控制执行方式。
+系统当前推荐采用“两阶段”交互：
+
+1. 先调用 `POST /v1/collect` 或 `POST /v1/collect/upload` 进入 intake 阶段
+2. 服务端记录本轮输入，维护 `session_id` 对应的会话上下文，并返回追问建议
+3. 用户可继续多轮补充信息
+4. 当需要正式结果时，再调用正式报告入口
+
+说明：
+
+- `collect` 与 `collect/upload` 是同一 intake 阶段的并列入口，分别对应文本/路径输入与文件上传输入两种调用方式
+- 当前 `can_generate_report` 不再作为硬门槛，而是用于前端提示与流程展示
+- 系统当前推荐主流程已收敛为：`collect` / `collect/upload` -> `report`
+- `jobs` / `jobs/upload` 保留为显式异步能力入口，适合展示后台任务、SSE 与事件分发能力
+- `consult`、`consult/upload`、`dispatch`、`dispatch/upload` 当前属于兼容保留接口；若后续继续收口接口体系，这几组入口是优先可以弱化或移除的对象
 
 ## 元信息接口
 
@@ -42,11 +74,222 @@
 }
 ```
 
-## 咨询接口
+## Intake 与报告接口
+
+### `POST /v1/collect`
+
+进入多轮 intake 采集阶段。
+
+该接口用于记录用户当前输入、维护会话上下文，并返回：
+
+- intake 阶段的辅助回复
+- 后续建议追问
+- 当前收集到的上下文内容
+- 当前会话编号 `session_id`
+
+请求体：
+
+```json
+{
+  "query": "患者近两周反复右上腹不适，希望先梳理还需要补充哪些信息",
+  "image_path": "C:/data/example/image.nii.gz",
+  "session_id": "optional-session-id",
+  "reviewer_enabled": true
+}
+```
+
+字段说明：
+
+- `query`：必填，本轮用户输入
+- `image_path`：可选，本地可访问的影像路径
+- `session_id`：可选；若不传，服务端自动生成新的会话 ID
+- `reviewer_enabled`：当前 intake 阶段不会实际触发 reviewer，但字段保留以兼容统一请求结构
+
+响应字段：
+
+- `session_id`
+- `assistant_message`
+- `follow_up_questions`
+- `can_generate_report`
+- `readiness_mode`
+- `readiness_reasons`
+- `context_turn_count`
+- `latest_image_path`
+- `collected_context`
+
+说明：
+
+- 服务端优先从 Redis 读取 `session_id` 对应的上下文
+- 若 Redis miss，则可基于数据库中的 `intake_messages` 与 `consultations` 恢复最近几轮上下文
+- 当前 intake 建议优先由 LLM 生成；若 LLM 不可用，则回退到 fallback 逻辑
+
+返回示例：
+
+```json
+{
+  "session_id": "2e2c2b58-7d7c-4f6c-9c34-9d73e8b1c001",
+  "assistant_message": "我已经记录本轮 intake。你现在可以直接生成报告，也可以先补充更多信息。",
+  "follow_up_questions": [
+    "请补充主要症状、持续时间，以及是否近期加重。",
+    "请说明已有检查结果、既往肝病史或治疗史。"
+  ],
+  "can_generate_report": true,
+  "readiness_mode": "deepseek-chat",
+  "readiness_reasons": [
+    "建议补充更完整的病史与检查结果，以提高报告质量。"
+  ],
+  "context_turn_count": 2,
+  "latest_image_path": "C:/data/example/image.nii.gz",
+  "collected_context": {
+    "session_summary": "Q: ... A: ...",
+    "recent_turns": [
+      {
+        "query": "上一轮 intake",
+        "report": "上一轮 assistant_message",
+        "created_at": "2026-05-16T10:00:00",
+        "image_path": "C:/data/example/image.nii.gz",
+        "stage": "collect"
+      }
+    ],
+    "latest_image_path": "C:/data/example/image.nii.gz"
+  }
+}
+```
+
+### `POST /v1/collect/upload`
+
+上传 `.nii.gz` 文件并进入 intake 采集阶段。
+
+该接口适用于需要先上传影像、再进行多轮 intake 的场景。
+
+表单字段：
+
+- `query`：必填
+- `reviewer_enabled`：可选，默认 `true`
+- `session_id`：可选；若不传，服务端自动生成新的会话 ID
+- `image_file`：必填，必须为 `.nii.gz` 文件
+
+说明：
+
+- 服务端会先对上传文件计算 SHA256
+- 若命中磁盘缓存，则复用已有缓存文件
+- `latest_image_path` 会更新为缓存后的最终影像路径
+- 响应结构与 `POST /v1/collect` 基本一致
+
+### `POST /v1/report`
+
+基于当前 `session_id` 的上下文生成正式报告。
+
+这是当前推荐的正式报告生成入口。  
+系统会在进入正式报告流程前进行轻量路由判断：
+
+- 若不需要影像 perception，则同步执行并直接返回结果
+- 若需要影像 perception，则更适合走异步任务路径
+
+请求体：
+
+```json
+{
+  "query": "请基于当前已收集信息生成正式报告，并给出下一步建议",
+  "image_path": null,
+  "session_id": "2e2c2b58-7d7c-4f6c-9c34-9d73e8b1c001",
+  "reviewer_enabled": true
+}
+```
+
+说明：
+
+- 服务端优先读取 `session_id` 对应的 session context
+- 若当前请求未显式提供 `image_path`，则可尝试复用 session context 中的 `latest_image_path`
+- 当前代码中的正式报告核心逻辑统一复用同一套 `run -> graph -> persist` 流程
+- 这是当前推荐的正式报告入口，应优先于 `consult` 使用
+- 若后续进一步收口接口体系，`report` 应保留为唯一正式报告主入口
+
+同步返回时，响应结构与 `POST /v1/consult` 一致，例如：
+
+```json
+{
+  "report": "......",
+  "preview_image_base64": null,
+  "consultation_id": 12,
+  "session_id": "2e2c2b58-7d7c-4f6c-9c34-9d73e8b1c001",
+  "status": "completed",
+  "intent": "clinical",
+  "perception_status": "completed",
+  "warnings": [],
+  "errors": [],
+  "evidence": [],
+  "trace": []
+}
+```
+
+## 兼容保留接口
+
+说明：
+
+- 本节接口当前仍可用，但不再作为推荐主入口
+- 这些接口主要用于兼容旧调用方式或保留工程能力展示
+- 若后续希望继续精简接口体系，建议优先保留 `collect`、`collect/upload`、`report`、`jobs`、`jobs/upload`，并逐步弱化本节接口
+
+### `POST /v1/consult`
+
+显式同步执行一次咨询请求。
+
+请求体：
+
+```json
+{
+  "query": "请分析当前肝脏病例并给出下一步建议",
+  "image_path": "C:/path/to/scan_dir",
+  "session_id": "optional-session-id",
+  "reviewer_enabled": true
+}
+```
+
+说明：
+
+- `POST /v1/consult` 为兼容保留的单步咨询接口
+- 该接口会直接执行正式报告流程，不经过独立的 intake 阶段
+- 当前更推荐优先使用 `POST /v1/collect` + 正式报告入口的两阶段调用方式
+- 若后续继续收口接口，`consult` 是优先可以被 `report` 替代的接口之一
+
+返回字段：
+
+- `report`
+- `preview_image_base64`
+- `consultation_id`
+- `session_id`
+- `status`
+- `intent`
+- `perception_status`
+- `warnings`
+- `errors`
+- `evidence`
+- `trace`
+
+### `POST /v1/consult/upload`
+
+通过上传 `.nii.gz` 文件显式同步执行一次咨询请求。
+
+表单字段：
+
+- `query`
+- `reviewer_enabled`
+- `session_id`
+- `image_file`
+
+说明：
+
+- `POST /v1/consult/upload` 为兼容保留的单步上传咨询接口
+- 当前若需要先采集信息、再显式生成报告，更推荐使用 `POST /v1/collect/upload`
+- 返回结果中的 `warnings` 会附带 `cache hit / cache miss` 信息
+- 若后续继续收口接口，`consult/upload` 是优先可以被 `collect/upload + report` 替代的接口之一
 
 ### `POST /v1/dispatch`
 
-统一咨询入口。后端会根据 `dispatch_mode` 和共享 analyzer 的结果决定当前请求走同步执行还是异步任务模式。
+统一分流入口。
+
+后端会根据 `dispatch_mode` 和共享 analyzer 的结果决定当前请求走同步执行还是异步任务模式。
 
 查询参数：
 
@@ -63,160 +306,50 @@
 }
 ```
 
-字段说明：
+响应字段：
 
-- `query`：必填，临床问题、教育类问题或辅助决策问题
-- `image_path`：可选，本地影像路径或 DICOM/NIfTI 路径
-- `session_id`：可选，会话标识
-- `reviewer_enabled`：是否启用 reviewer 节点
+- `mode`
+- `decision`
+- `result`
+- `job`
 
-返回字段：
+说明：
 
-- `mode`：本次最终采用的执行模式，`sync` 或 `async`
-- `decision`：共享 analyzer 的判断结果
-  - `mode`
-  - `reason`
-  - `intent_hint`
-  - `should_retrieve`
-  - `should_perceive`
-- `result`：当 `mode=sync` 时返回完整咨询结果
-- `job`：当 `mode=async` 时返回异步任务信息
-
-同步返回示例：
-
-```json
-{
-  "mode": "sync",
-  "decision": {
-    "mode": "sync",
-    "reason": "Auto dispatch selected sync because shared analyzer did not require image perception.",
-    "should_retrieve": true,
-    "should_perceive": false,
-    "intent_hint": "education"
-  },
-  "result": {
-    "report": "generated answer",
-    "preview_image_base64": null,
-    "consultation_id": 1,
-    "session_id": "uuid",
-    "status": "completed",
-    "intent": "education",
-    "perception_status": "skipped",
-    "warnings": [],
-    "errors": [],
-    "evidence": [],
-    "trace": []
-  },
-  "job": null
-}
-```
-
-异步返回示例：
-
-```json
-{
-  "mode": "async",
-  "decision": {
-    "mode": "async",
-    "reason": "Auto dispatch selected async because shared analyzer requested image perception.",
-    "should_retrieve": true,
-    "should_perceive": true,
-    "intent_hint": "clinical"
-  },
-  "result": null,
-  "job": {
-    "job_id": "uuid",
-    "session_id": "uuid",
-    "status": "queued"
-  }
-}
-```
+- `dispatch` 当前仍可用，但更适合作为兼容保留的自动分流入口
+- 当请求涉及 perception 时，通常更容易被分流到异步路径
+- 后续若系统进一步收口接口，`dispatch` 是优先可以弱化的入口之一
+- 若后续主流程完全收敛为 `collect + report + jobs`，`dispatch` 可以考虑整体下线
 
 ### `POST /v1/dispatch/upload`
 
-通过上传 `.nii.gz` 文件进入统一咨询入口。后端会先保存并复用上传缓存，再根据 `dispatch_mode` 和共享 analyzer 的结果决定走同步还是异步。
+通过上传 `.nii.gz` 文件进入统一分流入口。
 
 表单字段：
 
-- `query`：必填
-- `reviewer_enabled`：可选，默认 `true`
-- `session_id`：可选
-- `dispatch_mode`：可选，取值为 `auto`、`sync`、`async`，默认 `auto`
-- `image_file`：必填，`.nii.gz` 文件
+- `query`
+- `reviewer_enabled`
+- `session_id`
+- `dispatch_mode`
+- `image_file`
 
-接口行为：
+说明：
 
-- 非 `.nii.gz` 文件会返回 `400`
-- 上传文件会先写入会话级临时目录
-- 当 SHA256 命中缓存时会复用已缓存文件
-- 返回结果中的 `decision` 表示本次 dispatch 判断
-- 若为同步执行，返回 `result`
-- 若为异步执行，返回 `job`
-
-### `POST /v1/consult`
-
-显式同步执行一次咨询请求。适用于调用方已经明确希望直接返回结果的场景。
-
-请求体：
-
-```json
-{
-  "query": "请分析当前肝脏病例并给出下一步建议",
-  "image_path": "C:/path/to/scan_dir",
-  "session_id": "optional-session-id",
-  "reviewer_enabled": true
-}
-```
-
-字段说明：
-
-- `query`：必填，临床问题或教育类问题
-- `image_path`：可选，本地影像路径或 DICOM 目录路径
-- `session_id`：可选，会话标识
-- `reviewer_enabled`：是否启用报告审查节点
-
-返回字段：
-
-- `report`：生成的报告文本
-- `preview_image_base64`：可选的预览图
-- `consultation_id`：持久化后的咨询记录 ID
-- `session_id`：当前会话 ID
-- `status`：工作流状态
-- `intent`：识别出的意图类型
-- `perception_status`：感知分支状态
-- `warnings`：降级、回退或提示信息
-- `errors`：流程中的错误信息
-- `evidence`：检索得到的语料库证据列表
-- `trace`：节点执行轨迹
-
-### `POST /v1/consult/upload`
-
-通过上传 `.nii.gz` 文件显式同步执行一次咨询请求。
-
-表单字段：
-
-- `query`：必填
-- `reviewer_enabled`：可选，默认 `true`
-- `session_id`：可选
-- `image_file`：必填，`.nii.gz` 文件
-
-接口行为：
-
-- 非 `.nii.gz` 文件会返回 `400`
-- 上传文件会先写入会话级临时目录
-- 当 SHA256 命中缓存时会复用已缓存文件
-- 返回结果中的 `warnings` 会附带 cache hit / cache miss 信息
+- 行为与 `POST /v1/dispatch` 基本一致
+- 服务端会先保存并复用上传缓存，再判断同步或异步
+- 若后续主流程完全收敛为 `collect/upload + report/jobs`，`dispatch/upload` 可以考虑整体下线
 
 ## 异步任务接口
 
 说明：
 
-- 当通过 `dispatch` 入口被判定为异步时，最终也会落到同一套 job 任务体系
-- 因此 `/v1/jobs/{job_id}` 和 `/v1/jobs/{job_id}/events` 同样适用于 `dispatch(mode=async)` 返回的任务
+- 正式报告生成在工程实现上支持异步任务执行
+- 当前更适合将 `jobs` 理解为显式异步能力入口，而不是多轮 intake 的主入口
+- 当通过 `dispatch` 被判定为异步时，最终也会落到同一套 job 任务体系
+- 这组接口建议保留，用于展示异步任务、任务持久化、SSE 与 Redis 事件分发能力
 
 ### `POST /v1/jobs`
 
-显式提交一个异步咨询任务。适用于调用方已经明确希望进入后台任务队列的场景。
+显式提交一个异步咨询任务。
 
 请求体：
 
@@ -238,6 +371,11 @@
   "status": "queued"
 }
 ```
+
+说明：
+
+- 该接口适合调用方已经明确希望进入后台任务队列的场景
+- 后续如果系统继续收口，`jobs` 仍然值得保留，用于展示异步任务、SSE 和事件分发能力
 
 ### `POST /v1/jobs/upload`
 
@@ -337,6 +475,17 @@ text/event-stream
   "created_at": "2026-05-13T18:30:00"
 }
 ```
+
+## 会话上下文说明
+
+系统通过 `session_id` 串联多轮 intake 与正式报告生成：
+
+- `collect` 阶段会写入 `intake_messages`
+- `report` 阶段会写入 `consultations`
+- Redis 用于缓存最近几轮 session context
+- 当 Redis miss 时，系统可基于数据库中的 `intake_messages` 与 `consultations` 恢复上下文
+
+因此，若希望多轮交互保持连续，客户端应持续复用同一个 `session_id`。
 
 ## 常见错误
 

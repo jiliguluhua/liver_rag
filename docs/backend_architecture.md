@@ -48,18 +48,21 @@ flowchart TD
     M --> L
 
     E --> N[读取 session 上下文]
-    N --> O[执行 LangGraph 正式报告流程]
+    N --> O{是否需要影像感知}
+    O -->|否| P[同步执行正式报告流程]
+    O -->|是| Q[创建异步报告任务]
 
-    F --> O
-    G --> P[将任务持久化为 queued]
-    H --> Q[保存上传内容并持久化任务]
-    P --> R[放入队列]
-    Q --> R
-    R --> S[后台 Worker 执行任务]
+    F --> P
+    G --> Q
+    H --> R[保存上传内容并持久化任务]
+    Q --> S[将任务持久化为 queued]
+    R --> S
+    S --> T[放入队列]
+    T --> U[后台 Worker 执行任务]
 
-    I --> T[读取任务状态与结果快照]
-    J --> U[实时接收 job 与节点事件]
-    K --> V[读取 consultation 历史]
+    I --> V[读取任务状态与结果快照]
+    J --> W[实时接收 job 与节点事件]
+    K --> X[读取 consultation 历史]
 ```
 
 ## 3. Intake 与报告链路
@@ -86,23 +89,45 @@ sequenceDiagram
 
     Client->>API: POST /v1/report
     API->>Redis: 读取 session context
-    API->>Agent: run(image_path, query, session_id, reviewer_enabled, user_context)
-    Agent->>Graph: invoke(initial_state)
-    Graph-->>Agent: 返回 report + preview + trace
-    Agent-->>API: 返回正式报告结果
-    API->>DB: 写入 consultations
-    API->>Redis: 刷新 session context
-    API-->>Client: 返回 ConsultResponse
+    API->>API: 轻量路由判断是否需要 perception
+    alt 不需要 perception
+        API->>Agent: run(image_path, query, session_id, reviewer_enabled, user_context)
+        Agent->>Graph: invoke(initial_state)
+        Graph-->>Agent: 返回 report + preview + trace
+        Agent-->>API: 返回正式报告结果
+        API->>DB: 写入 consultations
+        API->>Redis: 刷新 session context
+        API-->>Client: 返回 ConsultResponse
+    else 需要 perception
+        API->>DB: 写入 consultation_jobs(status=queued)
+        API-->>Client: 返回 job_id
+    end
 ```
 
 当前实现要点：
 
 - `collect` 阶段负责记录用户输入、维护会话上下文，并给出下一步追问建议
-- `report` 阶段才真正进入 LangGraph 正式报告流程
+- `report` 阶段才真正进入正式报告生成流程
+- 报告生成并不是固定同步或固定异步，而是根据是否需要影像感知决定执行方式
+- 轻量文本路径可同步返回；涉及 perception 的重路径更适合异步执行
 - `can_generate_report` 当前不再作为硬门槛，而是允许用户随时显式生成报告
 - 会话上下文优先读 Redis，Redis miss 时可由数据库恢复
 
-## 4. 异步任务链路
+## 4. 正式报告的同步与异步执行
+
+正式报告生成只有一套核心业务目标：整合上下文、检索结果与感知结果，产出正式报告。  
+同步与异步不是两套不同业务，而是同一正式报告流程的两种执行方式：
+
+- 同步执行：适合不需要影像感知的轻量路径，请求线程直接调用正式报告流程并返回结果
+- 异步执行：适合涉及影像感知推理的重路径，先创建任务，再由后台 worker 调用同一套正式报告逻辑
+
+因此，系统当前更推荐这样理解：
+
+- `collect`：同步进行 intake
+- `report`：正式报告入口，由路由判断决定同步还是异步
+- `jobs`：显式异步能力入口
+
+## 5. 异步任务链路
 
 ```mermaid
 sequenceDiagram
@@ -143,7 +168,7 @@ sequenceDiagram
     SSE-->>Client: 实时更新任务状态
 ```
 
-## 5. 上传与缓存链路
+## 6. 上传与缓存链路
 
 ```mermaid
 flowchart TD
@@ -165,7 +190,7 @@ flowchart TD
 - Redis 主要保存 session context、任务状态快照、检索缓存与事件分发
 - 上传缓存采用基于 SHA256 的磁盘去重复用
 
-## 6. Agent 工作流
+## 7. Agent 工作流
 
 说明：当前 LangGraph 工作流主要用于“正式报告生成”阶段。  
 `collect / intake` 阶段不直接进入完整 graph，而是先基于会话上下文整理已知信息、生成追问建议，并由用户显式触发报告生成。
@@ -195,7 +220,7 @@ flowchart TD
 - 只有当两者都需要时，`retriever` 和 `perceptor` 才并行执行
 - 二者完成后再汇总进入 `reporter`
 
-## 7. SSE 事件流模型
+## 8. SSE 事件流模型
 
 当前系统中的 Redis 主要承担两类职责：
 
@@ -234,7 +259,7 @@ flowchart TD
 - 各节点状态变化
 - trace 流式更新
 
-## 8. 持久化模型（仅展示核心字段）
+## 9. 持久化模型（仅展示核心字段）
 
 ```mermaid
 erDiagram
@@ -269,7 +294,7 @@ erDiagram
     INTAKE_MESSAGES }o--|| CONSULTATIONS : 同属会话上下文
 ```
 
-## 9. 会话上下文恢复机制
+## 10. 会话上下文恢复机制
 
 当前会话上下文采用“Redis 缓存 + 数据库恢复”的方式：
 

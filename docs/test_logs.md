@@ -61,6 +61,21 @@ Notes:
 - This run covered the new intake / report flow and session-context persistence behavior.
 - `deselected` means the remaining tests in `test_api.py` were intentionally filtered out and not executed.
 
+Command:
+
+```bash
+pytest tests/integration/test_api.py -k "collect or report or persists_turns"
+```
+
+Result:
+
+- Pending local verification after aligning `/v1/report` with sync/async routing.
+
+Notes:
+
+- This command is the recommended regression check for the current intake + report flow.
+- Focus cases include collect response behavior, cached session image reuse, async report job creation, and intake turn persistence.
+
 ## 2026-05-16 Dispatch Update
 
 Command:

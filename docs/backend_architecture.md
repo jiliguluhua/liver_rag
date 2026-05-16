@@ -192,29 +192,59 @@ flowchart TD
 
 ## 7. Agent 工作流
 
-说明：当前 LangGraph 工作流主要用于“正式报告生成”阶段。  
-`collect / intake` 阶段不直接进入完整 graph，而是先基于会话上下文整理已知信息、生成追问建议，并由用户显式触发报告生成。
+## Agent 整体流程
+
+当前项目里的 Agent 流程，如果从用户视角看，不只是 LangGraph 内部的几个 node，而是一个更完整的链路：
+
+- 会话管理、多轮上下文维护放在 graph 外层
+- 正式报告生成逻辑放在 graph 内部
+
+1. `collect` 阶段  
+   用于记录用户当前输入、维护 `session_id` 对应的多轮上下文，并调用llm生成追问建议。  
+   这一层主要负责会话管理和 intake 信息收集，还没有真正进入 LangGraph。
+
+2. `report` 阶段  
+   用于读取当前会话上下文、整理正式报告所需输入，并触发正式报告生成流程。  
+   这一层可以理解为进入 Agent 工作流的正式入口，但它本身也不属于 LangGraph 内部 node。
+
+3. LangGraph 内部工作流  
+   真正进入 graph 之后，才会依次执行内部 node：
+   - `analyzer`：判断当前问题意图，以及是否需要检索、是否需要影像感知
+   - `retriever`：执行知识库检索，补充证据
+   - `perceptor`：执行影像感知或分割相关分析
+   - `reporter`：汇总上下文、检索结果和感知结果，生成正式报告
+   - `reviewer`：对报告做额外审核或安全检查
 
 ```mermaid
 flowchart TD
-    Start([开始]) --> Analyzer[意图分析节点]
+    A[用户请求] --> B[collect<br/>采集当前输入]
+    B --> C[更新 session context<br/>保存 intake_messages]
+    C --> D[report<br/>整理正式报告输入]
 
-    Analyzer -->|无关问题| Reporter[报告生成节点]
-    Analyzer -->|仅检索| Retriever[检索节点]
-    Analyzer -->|仅感知| Perceptor[感知节点]
-    Analyzer -->|两者都需要| Retriever
-    Analyzer -->|两者都需要| Perceptor
-    Analyzer -->|直接回答| Reporter
+    D --> E[进入 LangGraph]
 
-    Retriever --> Reporter
-    Perceptor --> Reporter
-    Reporter --> Reviewer{是否开启 Reviewer}
-    Reviewer -->|是| ReviewNode[医学审核节点]
-    Reviewer -->|否| End([结束])
-    ReviewNode --> End
+    E --> F[analyzer<br/>意图分析]
+    F --> G{是否需要检索/感知}
+
+    G -->|仅检索| H[retriever]
+    G -->|仅感知| I[perceptor]
+    G -->|两者都需要| H
+    G -->|两者都需要| I
+    G -->|都不需要| J[reporter]
+
+    H --> J[reporter<br/>生成正式报告]
+    I --> J
+
+    J --> K{是否启用 reviewer}
+    K -->|是| L[reviewer]
+    K -->|否| M[结束]
+
+    L --> M[结束]
+
+    M --> N[写入 consultations<br/>必要时回写 consultation_jobs]
 ```
 
-这一阶段的关键点是：
+graph内部的关键点是：
 
 - 先由 `analyzer` 判断是否需要检索、是否需要感知
 - 只有当两者都需要时，`retriever` 和 `perceptor` 才并行执行
@@ -302,3 +332,7 @@ erDiagram
 - `report` 阶段会读取同一 `session_id` 下的上下文，并将正式报告结果写入 `consultations`
 - 当 Redis miss 或服务重启后，系统可基于 `intake_messages` 与 `consultations` 重建最近几轮上下文
 - Redis 不再是 intake 历史的唯一来源，而是会话状态的加速层
+
+```
+
+```

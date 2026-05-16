@@ -99,13 +99,14 @@ def create_initial_state(
     session_id: str = "",
     job_id: str = "",
     reviewer_enabled: bool = True,
+    user_context: Optional[dict[str, Any]] = None,
 ) -> AgentState:
     return {
         "job_id": job_id,
         "session_id": session_id,
         "query": query,
         "image_path": image_path,
-        "user_context": {},
+        "user_context": user_context or {},
         "workflow_status": "pending",
         "should_retrieve": True,
         "should_perceive": False,

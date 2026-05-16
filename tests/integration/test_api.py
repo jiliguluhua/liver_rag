@@ -512,6 +512,66 @@ def test_consult_accepts_valid_api_key_when_configured(monkeypatch, tmp_path):
     assert response.json()["report"] == "authorized report"
 
 
+def test_consult_loads_recent_session_context(monkeypatch, tmp_path):
+    client, TestingSessionLocal = _make_client(monkeypatch, tmp_path)
+
+    db = TestingSessionLocal()
+    try:
+        db.add_all(
+            [
+                ConsultationRecord(
+                    session_id="session-memory",
+                    query="first visit question",
+                    report="first visit answer",
+                    image_path=None,
+                    has_preview=False,
+                ),
+                ConsultationRecord(
+                    session_id="session-memory",
+                    query="second visit question",
+                    report="second visit answer",
+                    image_path=None,
+                    has_preview=False,
+                ),
+            ]
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    captured_context: dict = {}
+
+    class FakeAgent:
+        def run(self, image_path, user_query, **kwargs):
+            nonlocal captured_context
+            captured_context = kwargs.get("user_context", {})
+            return (
+                "context aware report",
+                None,
+                {
+                    "workflow_status": "completed",
+                    "intent": "clinical",
+                    "perception_status": "skipped",
+                    "warnings": [],
+                    "errors": [],
+                    "evidence": [],
+                    "trace": [],
+                },
+            )
+
+    api_main.app.state.agent = FakeAgent()
+
+    response = client.post(
+        "/v1/consult",
+        json={"query": "follow-up question", "session_id": "session-memory", "reviewer_enabled": True},
+    )
+
+    assert response.status_code == 200
+    assert captured_context["recent_turns"][0]["query"] == "first visit question"
+    assert captured_context["recent_turns"][1]["query"] == "second visit question"
+    assert "first visit question" in captured_context["session_summary"]
+
+
 def test_job_events_stream_returns_error_for_missing_job(monkeypatch, tmp_path):
     client, _session = _make_client(monkeypatch, tmp_path)
 

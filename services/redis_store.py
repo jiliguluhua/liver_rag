@@ -89,6 +89,19 @@ class RedisStore:
         digest = hashlib.sha256(f"{query}|{top_k}".encode("utf-8")).hexdigest()
         return f"liver:search:{digest}"
 
+    def build_session_context_key(self, session_id: str) -> str:
+        return f"liver:session_context:{session_id}"
+
+    def get_session_context(self, session_id: str) -> Optional[dict[str, Any]]:
+        return self.get_json(self.build_session_context_key(session_id))
+
+    def set_session_context(self, session_id: str, payload: dict[str, Any]) -> None:
+        self.set_json(
+            self.build_session_context_key(session_id),
+            payload,
+            config.REDIS_SESSION_CONTEXT_TTL_SECONDS,
+        )
+
     def get_search_results(self, query: str, top_k: int) -> Optional[list[Document]]:
         cached = self.get_json(self.build_search_key(query, top_k))
         if not cached:

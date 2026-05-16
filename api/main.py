@@ -193,6 +193,59 @@ def _cache_job_status_snapshot(snapshot: JobStatusResponse) -> None:
     redis_store.set_job_status(snapshot.job_id, snapshot.model_dump(mode="json"))
 
 
+def _build_session_context_payload(rows: list[ConsultationRecord]) -> dict:
+    recent_rows = list(reversed(rows))
+    recent_turns = [
+        {
+            "consultation_id": row.id,
+            "query": row.query,
+            "report": row.report,
+            "created_at": row.created_at.isoformat(),
+            "image_path": row.image_path,
+        }
+        for row in recent_rows
+    ]
+    summary = "No prior session context available."
+    if recent_turns:
+        summary = " | ".join(
+            f"Q: {turn['query'][:80]} A: {turn['report'][:120]}"
+            for turn in recent_turns
+        )
+    return {
+        "session_summary": summary,
+        "recent_turns": recent_turns,
+    }
+
+
+def _load_session_context(db: Session, session_id: str) -> dict:
+    cached = redis_store.get_session_context(session_id)
+    if cached is not None:
+        return cached
+    rows = (
+        db.query(ConsultationRecord)
+        .filter(ConsultationRecord.session_id == session_id)
+        .order_by(ConsultationRecord.created_at.desc())
+        .limit(config.SESSION_CONTEXT_MAX_TURNS)
+        .all()
+    )
+    payload = _build_session_context_payload(rows)
+    redis_store.set_session_context(session_id, payload)
+    return payload
+
+
+def _refresh_session_context_cache(db: Session, session_id: str) -> dict:
+    rows = (
+        db.query(ConsultationRecord)
+        .filter(ConsultationRecord.session_id == session_id)
+        .order_by(ConsultationRecord.created_at.desc())
+        .limit(config.SESSION_CONTEXT_MAX_TURNS)
+        .all()
+    )
+    payload = _build_session_context_payload(rows)
+    redis_store.set_session_context(session_id, payload)
+    return payload
+
+
 def _serialize_sse(event: str, data: dict) -> str:
     payload = json.dumps(data, ensure_ascii=False)
     return f"event: {event}\ndata: {payload}\n\n"
@@ -346,12 +399,14 @@ def _run_consultation(
     image_path: Optional[str],
     reviewer_enabled: bool,
 ) -> ConsultResponse:
+    session_context = _load_session_context(db, session_id)
     report, preview_img, final_state = agent.run(
         image_path,
         query,
         job_id=job_id,
         session_id=session_id,
         reviewer_enabled=reviewer_enabled,
+        user_context=session_context,
     )
     row = _save_consultation(
         db,
@@ -361,6 +416,7 @@ def _run_consultation(
         image_path=image_path,
         has_preview=preview_img is not None,
     )
+    _refresh_session_context_cache(db, session_id)
     return _build_consult_response(
         row=row,
         report=report,

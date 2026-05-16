@@ -29,3 +29,22 @@ def test_redis_store_search_serialization_round_trip(monkeypatch):
     assert restored is not None
     assert restored[0].page_content == "guide text"
     assert restored[0].metadata["source"] == "guideline.pdf"
+
+
+def test_redis_store_session_context_round_trip(monkeypatch):
+    monkeypatch.setattr("services.redis_store.config.REDIS_URL", "redis://unused")
+    monkeypatch.setattr("services.redis_store.config.REDIS_SESSION_CONTEXT_TTL_SECONDS", 60)
+    store = RedisStore()
+
+    captured: dict[str, dict] = {}
+    monkeypatch.setattr(store, "set_json", lambda key, data, ttl_seconds: captured.update({key: data}))
+    monkeypatch.setattr(store, "get_json", lambda key: captured.get(key))
+
+    payload = {
+        "session_summary": "Q: prior question A: prior answer",
+        "recent_turns": [{"query": "prior question", "report": "prior answer"}],
+    }
+    store.set_session_context("session-ctx", payload)
+    restored = store.get_session_context("session-ctx")
+
+    assert restored == payload

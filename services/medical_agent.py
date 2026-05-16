@@ -22,6 +22,7 @@ class LiverSmartAgent:
         job_id: Optional[str] = None,
         session_id: Optional[str] = None,
         reviewer_enabled: bool = True,
+        user_context: Optional[dict[str, Any]] = None,
     ) -> tuple[str, Any, AgentState]:
         initial_state = create_initial_state(
             query=user_query,
@@ -29,6 +30,7 @@ class LiverSmartAgent:
             job_id=(job_id or "").strip(),
             session_id=(session_id or "").strip() or str(uuid.uuid4()),
             reviewer_enabled=reviewer_enabled,
+            user_context=user_context,
         )
         final_state = self.graph.invoke(initial_state)
         report = final_state.get("report", "")

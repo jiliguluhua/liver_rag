@@ -150,6 +150,27 @@ def _summarize_input_path(image_path: str) -> dict[str, Any]:
     return summary
 
 
+def _format_session_context(state: AgentState) -> str:
+    user_context = state.get("user_context") or {}
+    summary = str(user_context.get("session_summary", "")).strip()
+    turns = user_context.get("recent_turns", [])
+    lines: list[str] = []
+    if summary:
+        lines.append(f"Session summary: {summary}")
+    if isinstance(turns, list) and turns:
+        lines.append("Recent conversation turns:")
+        for idx, turn in enumerate(turns, start=1):
+            if not isinstance(turn, dict):
+                continue
+            query = str(turn.get("query", "")).strip()
+            report = str(turn.get("report", "")).strip()
+            if query:
+                lines.append(f"{idx}. User: {query}")
+            if report:
+                lines.append(f"{idx}. Assistant: {report[:280]}")
+    return os.linesep.join(lines) if lines else "No prior session context available."
+
+
 def intent_analyzer_node(state: AgentState):
     start_time = time.perf_counter()
     query = state["query"]
@@ -393,6 +414,8 @@ You are a careful medical decision-support assistant for liver-related cases.
 
 User intent: {intent}
 User query: {state.get("query", "")}
+Session context:
+{_format_session_context(state)}
 Perception status: {state.get("perception_status", "not_requested")}
 Perception summary: {state.get("perception_data", "N/A")}
 Review feedback from previous pass: {state.get("review_feedback", "")}
@@ -508,6 +531,8 @@ If the report is acceptable, reply with PASS only.
 Otherwise, reply with a short correction note.
 
 User query: {state.get("query", "")}
+Session context:
+{_format_session_context(state)}
 Perception summary: {state.get("perception_data", "")}
 Evidence count: {len(state.get("evidence", []))}
 Report:

@@ -192,7 +192,7 @@ flowchart TD
 
 ## 7. Agent 工作流
 
-当前项目里的 Agent 流程，如果从用户视角看，不只是 LangGraph 内部的几个 node，而是一个更完整的链路：
+当前项目里的 Agent 流程，从用户视角看，分为 LangGraph 内外两层：
 
 - 会话管理、多轮上下文维护放在 graph 外层
 - 正式报告生成逻辑放在 graph 内部
@@ -214,26 +214,26 @@ flowchart TD
    - `reviewer`：对报告做额外审核或安全检查
 
 ```mermaid
-flowchart TD
+flowchart LR
     A[用户请求] --> B[collect]
-    B --> C{是否继续 collect}
+    B --> C{继续 collect?}
 
     C -->|是| B
     C -->|否| D[report]
 
     D --> E[analyzer]
-    E --> F{是否需要 retrieval / perception}
+    E --> F{需要 retrieval / perception?}
 
     F -->|retrieval| G[retriever]
     F -->|perception| H[perceptor]
-    F -->|两者都需要| G
-    F -->|两者都需要| H
-    F -->|都不需要| I[reporter]
+    F -->|两者都需| G
+    F -->|两者都需| H
+    F -->|都不需| I[reporter]
 
-    G --> I[reporter]
+    G --> I
     H --> I
 
-    I --> J{是否启用 reviewer}
+    I --> J{启用 reviewer?}
     J -->|是| K[reviewer]
     J -->|否| L[persist]
 

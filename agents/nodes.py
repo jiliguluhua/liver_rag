@@ -149,6 +149,73 @@ def _summarize_input_path(image_path: str) -> dict[str, Any]:
     return summary
 
 
+def analyze_intent_routing(query: str, image_path: Optional[str]) -> dict[str, Any]:
+    normalized_query = (query or "").strip()
+    normalized_image_path = (image_path or "").strip()
+
+    if not config.LLM_API_KEY:
+        return {
+            "intent": "clinical",
+            "should_retrieve": True,
+            "should_perceive": bool(normalized_image_path),
+            "routing_mode": "fallback",
+            "warnings": ["LLM_API_KEY is not configured; intent classification fell back to rule-based defaults."],
+            "errors": [],
+        }
+
+    prompt = f"""
+Classify the following user request into one of these labels only:
+- clinical: diagnosis, treatment, prognosis, or patient-specific medical decision support
+- education: general medical education, concept explanation, or literature-style overview
+- unrelated: not medically relevant
+
+Then decide whether retrieval is needed and whether image perception is needed.
+
+User query: {normalized_query}
+Image path provided: {"yes" if normalized_image_path else "no"}
+
+Return exactly one line using this format:
+intent=<clinical|education|unrelated>;retrieve=<yes|no>;perceive=<yes|no>
+"""
+    try:
+        res = _get_logic_llm().invoke(prompt)
+        raw = res.content.strip().lower()
+        parsed = {
+            "intent": "clinical",
+            "retrieve": "yes",
+            "perceive": "yes" if normalized_image_path else "no",
+        }
+        for part in raw.split(";"):
+            if "=" not in part:
+                continue
+            key, value = part.split("=", 1)
+            parsed[key.strip()] = value.strip()
+
+        intent = parsed["intent"]
+        if intent not in {"clinical", "education", "unrelated"}:
+            intent = "clinical"
+
+        should_retrieve = parsed.get("retrieve", "yes") == "yes"
+        should_perceive = parsed.get("perceive", "no") == "yes" and bool(normalized_image_path)
+        return {
+            "intent": intent,
+            "should_retrieve": should_retrieve,
+            "should_perceive": should_perceive,
+            "routing_mode": "llm",
+            "warnings": [],
+            "errors": [],
+        }
+    except Exception as exc:
+        return {
+            "intent": "clinical",
+            "should_retrieve": True,
+            "should_perceive": bool(normalized_image_path),
+            "routing_mode": "fallback",
+            "warnings": [f"Intent analysis failed and used fallback routing: {exc}"],
+            "errors": [f"intent_analyzer_error: {exc}"],
+        }
+
+
 def intent_analyzer_node(state: AgentState):
     start_time = time.perf_counter()
     query = state["query"]
@@ -163,99 +230,38 @@ def intent_analyzer_node(state: AgentState):
         if should_perceive:
             return "Intent analysis completed. Perception branch was scheduled."
         return "Intent analysis completed. Report generation can continue directly."
-
-    if not config.LLM_API_KEY:
-        should_retrieve = True
-        should_perceive = bool(image_path)
-        return {
-            "intent": "clinical",
-            "should_retrieve": should_retrieve,
-            "should_perceive": should_perceive,
-            "workflow_status": "running",
-            "warnings": ["LLM_API_KEY is not configured; intent classification fell back to rule-based defaults."],
-            "trace": [
-                _trace(
-                    "analyzer",
-                    "completed",
-                    _trace_message(should_retrieve, should_perceive),
-                    start_time=start_time,
-                    metadata={"routing_mode": "fallback"},
-                )
-            ],
-        }
-
-    prompt = f"""
-Classify the following user request into one of these labels only:
-- clinical: diagnosis, treatment, prognosis, or patient-specific medical decision support
-- education: general medical education, concept explanation, or literature-style overview
-- unrelated: not medically relevant
-
-Then decide whether retrieval is needed and whether image perception is needed.
-
-User query: {query}
-Image path provided: {"yes" if image_path else "no"}
-
-Return exactly one line using this format:
-intent=<clinical|education|unrelated>;retrieve=<yes|no>;perceive=<yes|no>
-"""
-    try:
-        res = _get_logic_llm().invoke(prompt)
-        raw = res.content.strip().lower()
-        parsed = {
-            "intent": "clinical",
-            "retrieve": "yes",
-            "perceive": "yes" if image_path else "no",
-        }
-        for part in raw.split(";"):
-            if "=" not in part:
-                continue
-            key, value = part.split("=", 1)
-            parsed[key.strip()] = value.strip()
-
-        intent = parsed["intent"]
-        if intent not in {"clinical", "education", "unrelated"}:
-            intent = "clinical"
-
-        should_retrieve = parsed.get("retrieve", "yes") == "yes"
-        should_perceive = parsed.get("perceive", "no") == "yes" and bool(image_path)
-
-        return {
-            "intent": intent,
-            "should_retrieve": should_retrieve,
-            "should_perceive": should_perceive,
-            "workflow_status": "running",
-            "trace": [
-                _trace(
-                    "analyzer",
-                    "completed",
-                    _trace_message(should_retrieve, should_perceive),
-                    start_time=start_time,
-                    metadata={
-                        "intent": intent,
-                        "should_retrieve": should_retrieve,
-                        "should_perceive": should_perceive,
-                    },
-                )
-            ],
-        }
-    except Exception as exc:
-        return {
-            "intent": "clinical",
-            "should_retrieve": True,
-            "should_perceive": bool(image_path),
-            "workflow_status": "running",
-            "warnings": [f"Intent analysis failed and used fallback routing: {exc}"],
-            "errors": [f"intent_analyzer_error: {exc}"],
-            "trace": [
-                _trace(
-                    "analyzer",
-                    "failed",
-                    "Intent analysis failed; fallback routing applied.",
-                    start_time=start_time,
-                    error=str(exc),
-                )
-            ],
-        }
+    routing = analyze_intent_routing(query, image_path)
+    should_retrieve = bool(routing["should_retrieve"])
+    should_perceive = bool(routing["should_perceive"])
+    trace_status = "failed" if routing.get("errors") else "completed"
+    trace_message = (
+        "Intent analysis failed; fallback routing applied."
+        if routing.get("errors")
+        else _trace_message(should_retrieve, should_perceive)
+    )
+    return {
+        "intent": routing["intent"],
+        "should_retrieve": should_retrieve,
+        "should_perceive": should_perceive,
+        "workflow_status": "running",
+        "warnings": list(routing.get("warnings", [])),
+        "errors": list(routing.get("errors", [])),
+        "trace": [
+            _trace(
+                "analyzer",
+                trace_status,
+                trace_message,
+                start_time=start_time,
+                error="; ".join(routing.get("errors", [])),
+                metadata={
+                    "intent": routing["intent"],
+                    "should_retrieve": should_retrieve,
+                    "should_perceive": should_perceive,
+                    "routing_mode": routing.get("routing_mode", "unknown"),
+                },
+            )
+        ],
+    }
 
 
 def retrieve_node(state: AgentState):

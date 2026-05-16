@@ -32,6 +32,7 @@ from api.schemas import (
 from core import config
 from core.database import SessionLocal, get_db, init_db
 from core.models import ConsultationJobRecord, ConsultationRecord
+from agents.nodes import analyze_intent_routing
 from services.job_events import job_event_bus
 from services.job_queue import InMemoryJobQueue
 from services.medical_agent import LiverSmartAgent
@@ -39,39 +40,6 @@ from services.redis_store import redis_store
 
 
 WEB_INDEX_PATH = Path(__file__).resolve().parent.parent / "web" / "index.html"
-IMAGE_ANALYSIS_KEYWORDS = {
-    "image",
-    "imaging",
-    "scan",
-    "dicom",
-    "nifti",
-    "nii",
-    "ct",
-    "mri",
-    "mr",
-    "segmentation",
-    "segment",
-    "lesion",
-    "tumor",
-    "tumour",
-    "volume",
-    "size",
-    "boundary",
-    "enhancement",
-    "arterial",
-    "portal",
-    "washout",
-    "radiology",
-    "slice",
-}
-TEXT_ONLY_HINT_KEYWORDS = {
-    "guideline",
-    "education",
-    "overview",
-    "summary",
-    "mechanism",
-    "instruction",
-}
 
 
 def _pil_to_png_b64(img: Image.Image) -> str:
@@ -264,38 +232,21 @@ def _build_dispatch_decision(
     requested_mode: DispatchMode,
     upload_present: bool,
 ) -> DispatchDecision:
-    normalized_query = (query or "").strip().lower()
     normalized_image_path = (image_path or "").strip()
+    routing = analyze_intent_routing(query, normalized_image_path)
+    should_retrieve = bool(routing["should_retrieve"])
+    should_perceive = bool(routing["should_perceive"])
+    intent_hint = str(routing["intent"])
     has_image_signal = upload_present or bool(normalized_image_path)
-    image_keyword_hits = [kw for kw in IMAGE_ANALYSIS_KEYWORDS if kw in normalized_query]
-    text_only_hits = [kw for kw in TEXT_ONLY_HINT_KEYWORDS if kw in normalized_query]
-    should_perceive = has_image_signal and (
-        upload_present
-        or any(
-            hit in normalized_query
-            for hit in {
-                "ct",
-                "mri",
-                "scan",
-                "lesion",
-                "tumor",
-                "volume",
-                "segmentation",
-                "image",
-                "imaging",
-                "dicom",
-                "nifti",
-            }
-        )
-        or normalized_image_path.endswith((".nii", ".nii.gz"))
+    llm_reason = (
+        f"Shared analyzer classified intent={intent_hint}, "
+        f"retrieve={should_retrieve}, perceive={should_perceive}."
     )
-    should_retrieve = True
-    intent_hint = "education" if text_only_hits and not should_perceive else "clinical"
 
     if requested_mode == "sync":
         return DispatchDecision(
             mode="sync",
-            reason="Manual override forced synchronous execution.",
+            reason=f"Manual override forced synchronous execution. {llm_reason}",
             should_retrieve=should_retrieve,
             should_perceive=should_perceive,
             intent_hint=intent_hint,
@@ -303,26 +254,26 @@ def _build_dispatch_decision(
     if requested_mode == "async":
         return DispatchDecision(
             mode="async",
-            reason="Manual override forced asynchronous execution.",
+            reason=f"Manual override forced asynchronous execution. {llm_reason}",
             should_retrieve=should_retrieve,
             should_perceive=should_perceive,
             intent_hint=intent_hint,
         )
 
     if should_perceive and upload_present:
-        reason = "Auto dispatch selected async because a NIfTI upload was provided and the query appears to need image analysis."
+        reason = f"Auto dispatch selected async because upload-backed image analysis is required. {llm_reason}"
         mode: DispatchMode = "async"
     elif should_perceive and reviewer_enabled:
-        reason = "Auto dispatch selected async because the query appears image-heavy and reviewer processing is enabled."
+        reason = f"Auto dispatch selected async because perception is required and reviewer processing is enabled. {llm_reason}"
         mode = "async"
     elif should_perceive and has_image_signal:
-        reason = "Auto dispatch selected async because the query appears to require image perception."
+        reason = f"Auto dispatch selected async because shared analyzer requested image perception. {llm_reason}"
         mode = "async"
-    elif has_image_signal and image_keyword_hits:
-        reason = "Auto dispatch selected async because image input was provided and the query references imaging-specific concepts."
+    elif routing.get("errors"):
+        reason = f"Auto dispatch selected async because analyzer routing fell back after an error. {llm_reason}"
         mode = "async"
     else:
-        reason = "Auto dispatch selected sync because the request appears suitable for direct completion."
+        reason = f"Auto dispatch selected sync because shared analyzer did not require image perception. {llm_reason}"
         mode = "sync"
 
     return DispatchDecision(

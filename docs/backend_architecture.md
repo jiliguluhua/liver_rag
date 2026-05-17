@@ -320,6 +320,11 @@ erDiagram
     INTAKE_MESSAGES }o--|| CONSULTATIONS : 同属会话上下文
 ```
 
+补充说明：
+
+- 当前数据库中的 `intake_messages`、`consultations` 和 `consultation_jobs` 均为持久化记录，未设置自动过期机制；带 TTL 的主要是 Redis 缓存层。
+- 三者虽然共享部分上下文字段，但分别服务于问询过程留痕、正式结果存档和异步任务追踪，因此在当前实现中按职责拆分保存。后续优化可做瘦身处理。
+
 ## 10. 会话上下文恢复机制
 
 当前会话上下文采用“Redis 缓存 + 数据库恢复”的方式：

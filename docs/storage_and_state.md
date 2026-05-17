@@ -37,8 +37,6 @@
 这个表记录的是 `collect / intake` 阶段发生了什么。  
 可以把它理解成“用户和系统在正式出报告前，已经聊过什么、补充过什么信息”。
 
-它不是最终报告表，也不是异步任务表。
-
 ### `consultations`
 
 这是正式咨询结果表。
@@ -138,10 +136,7 @@ liver:job_status:{job_id}
 它通常来自数据库里的 `consultation_jobs`，只是为了更快读取。  
 比如查 `/v1/jobs/{job_id}` 时，会优先读 Redis，没命中再查数据库。
 
-所以：
-
-- Redis 里的 `job_status` 不是唯一来源
-- 真正长期记录还是数据库里的 `consultation_jobs`
+也就是说，Redis 里的 `job_status` 不是唯一来源。真正长期记录还是数据库里的 `consultation_jobs`
 
 ### `session_context`
 
@@ -160,7 +155,7 @@ liver:session_context:{session_id}
 这个上下文不是全量聊天历史，而是最近几轮的摘要和关键信息。  
 默认只保留最近 `SESSION_CONTEXT_MAX_TURNS` 轮，当前配置默认是 `3`。
 
-也就是说，Redis 里的会话上下文更像：
+Redis 里的会话上下文作用是：
 
 - 方便下次快速接着聊
 - 减少每次都回数据库拼接上下文
@@ -180,7 +175,7 @@ liver:search:{digest}
 
 - FAISS 向量检索
 - BM25 检索
-- 结果融合
+- RRF 结果融合
 
 ## 4. Redis 上下文和数据库上下文是什么关系
 
@@ -194,9 +189,7 @@ liver:search:{digest}
 4. 恢复来源是 `intake_messages + consultations`
 5. 恢复完再写回 Redis
 
-- Redis 存的是“最近几轮上下文缓存”
-- 数据库存的是“可恢复的历史记录”
-
+Redis 存的是“最近几轮上下文缓存”，数据库存的是“可恢复的历史记录”
 数据库负责兜底，Redis 负责提速
 
 ## 5. 最终结果到底存在哪里
@@ -238,7 +231,7 @@ liver:search:{digest}
 
 `job_event_bus` 的职责是发事件，不是存业务数据。
 
-它会有两种实现：
+目前用了两种实现：
 
 - 本地内存版
 - Redis Pub/Sub 版
@@ -252,7 +245,7 @@ liver:search:{digest}
 
 这些事件主要给 SSE 接口和前端实时展示用。
 
-重点是：
+总结：
 
 - 事件总线负责“通知”
 - Redis KV 负责“缓存”
@@ -262,7 +255,7 @@ liver:search:{digest}
 
 除了数据库和 Redis，这个项目还有文件层的数据。
 
-上传 `.nii.gz` 时，大概会这样处理：
+上传 `.nii.gz` 时，会这样处理：
 
 1. 先写到 session 临时目录
 2. 计算文件 SHA256
@@ -271,7 +264,7 @@ liver:search:{digest}
 5. 没有就移动到缓存目录
 6. 请求结束后清理临时目录
 
-所以图像本体不是存在 Redis 里，也不是存在数据库里，而是落在磁盘目录里。（nii太大了）
+所以图像本体不在Redis，不在SQLite，在磁盘目录里。（nii太大了）
 
 这里也能看出当前系统是分层存储的：
 
@@ -283,15 +276,11 @@ liver:search:{digest}
 
 ### `collect / intake`
 
-主要会发生这些事：
-
 - 写入 `intake_messages`
 - 更新 Redis 里的 `session_context`
 - 必要时复用历史 `latest_image_path`（session表的一个字段）
 
 ### `report`
-
-主要会发生这些事：
 
 - 读取 `session_context`
 - 必要时从数据库恢复最近上下文
@@ -300,8 +289,6 @@ liver:search:{digest}
 - 刷新 Redis 里的上下文缓存
 
 ### `jobs`
-
-主要会发生这些事：
 
 - 插入 `consultation_jobs`
 - 更新 Redis `job_status`（其实jobstatus也是从consultations_jobs里转录出来的）

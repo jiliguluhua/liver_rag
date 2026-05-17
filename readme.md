@@ -163,27 +163,12 @@ tests/
 └─ integration/
 ```
 
-当前已覆盖的测试包括：
+当前已覆盖的测试包括单元测试和集成测试：
 
-- `agents.nodes` 节点的 fallback、skip、placeholder、guardrail 和 reviewer disable 分支
-- `agents.routing.analyze_intent_routing` 的 fallback 与输出解析
-- `agents.graph` 路由分支测试
-- `services.job_events.JobEventBus`
-- `/health`
-- `/v1/collect`
-- `/v1/collect/upload`
-- `/v1/report`
-- `/v1/dispatch`
-- `/v1/dispatch/upload`
-- `/v1/consult`
-- `/v1/jobs`
-- `/v1/consult/upload`
-- `/v1/jobs/upload`
-- `/v1/jobs/{job_id}`
-- `/v1/jobs/{job_id}/events`
-- `/v1/consultations`
-- `/v1/consultations/{consultation_id}`
-- API Key 鉴权测试
+- 单元测试：覆盖 routing、graph 分支、节点 fallback/skip、事件总线和缓存相关逻辑
+- 集成测试：覆盖 collect、report、jobs、SSE、历史记录查询、上传接口和鉴权等核心 API 链路
+
+测试过程中通过 mock 隔离真实 LLM、检索和感知依赖，重点验证后端状态流转、持久化行为和接口返回结果的正确性。
 
 运行测试：
 

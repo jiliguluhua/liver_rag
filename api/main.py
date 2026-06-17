@@ -34,7 +34,6 @@ from api.schemas import (
     JobSubmitResponse,
     LearningSessionReportRequest,
     LearningSessionReportResponse,
-    RecommendationItem,
     RecommendRequest,
     RecommendResponse,
     ReportResponse,
@@ -45,14 +44,17 @@ from core.models import (
     ConsultationJobRecord,
     ConsultationRecord,
     IntakeMessageRecord,
-    LearningSessionRecord,
-    RecommendationLogRecord,
 )
 from agents.routing import analyze_intent_routing
 from services.job_events import job_event_bus
 from services.job_queue import InMemoryJobQueue
 from services.medical_agent import LiverSmartAgent
 from services.redis_store import redis_store
+from services.answer_service import build_answer_response
+from services.learning_service import upsert_learning_session
+from services.recommendation_service import build_recommend_response
+from services.report_service import build_learning_session_report
+from services.topic_parser import infer_procedure_and_topics
 
 
 WEB_INDEX_PATH = Path(__file__).resolve().parent.parent / "web" / "index.html"
@@ -218,24 +220,6 @@ def _build_job_status_response(row: ConsultationJobRecord) -> JobStatusResponse:
     )
 
 
-def _build_answer_response(consult_response: ConsultResponse, *, query: str) -> AnswerResponse:
-    procedure, topics = _infer_procedure_and_topics(query)
-    del procedure
-    return AnswerResponse(
-        answer=consult_response.report,
-        consultation_id=consult_response.consultation_id,
-        session_id=consult_response.session_id,
-        status=consult_response.status,
-        intent=consult_response.intent,
-        perception_status=consult_response.perception_status,
-        evidence=consult_response.evidence,
-        related_topics=topics,
-        warnings=consult_response.warnings,
-        errors=consult_response.errors,
-        trace=consult_response.trace,
-    )
-
-
 def _cache_job_status_snapshot(snapshot: JobStatusResponse) -> None:
     redis_store.set_job_status(snapshot.job_id, snapshot.model_dump(mode="json"))
 
@@ -376,90 +360,6 @@ def _save_intake_message(
     db.commit()
     db.refresh(row)
     return row
-
-
-def _infer_procedure_and_topics(text: str) -> tuple[Optional[str], list[str]]:
-    normalized = (text or "").lower()
-    procedure = None
-    if any(token in normalized for token in ["cholecystectomy", "胆囊切除", "胆囊"]):
-        procedure = "cholecystectomy"
-    elif any(token in normalized for token in ["hepatectomy", "肝切除", "肝段"]):
-        procedure = "hepatectomy"
-
-    topic_keywords = {
-        "anatomy": ["anatomy", "解剖", "calot", "calot triangle", "胆道变异"],
-        "disease_background": ["病理", "机制", "疾病", "背景", "肿瘤", "胆囊炎", "肝癌"],
-        "operative_steps": ["步骤", "术式", "操作", "切除步骤", "procedure", "step"],
-        "risk_points": ["风险", "损伤", "注意点", "陷阱", "risk"],
-        "complications": ["并发症", "胆漏", "出血", "损伤", "complication"],
-        "bailout_strategy": ["bailout", "转开放", "补救", "挽救", "困难胆囊"],
-    }
-    topics = [name for name, keywords in topic_keywords.items() if any(token in normalized for token in keywords)]
-    if not topics:
-        topics = ["operative_steps"] if procedure else ["disease_background"]
-    return procedure, topics
-
-
-def _upsert_learning_session(
-    db: Session,
-    *,
-    session_id: str,
-    procedure_name: Optional[str],
-    scene: Optional[str],
-) -> LearningSessionRecord:
-    row = (
-        db.query(LearningSessionRecord)
-        .filter(LearningSessionRecord.session_id == session_id)
-        .order_by(LearningSessionRecord.started_at.desc())
-        .first()
-    )
-    if row is None:
-        row = LearningSessionRecord(
-            session_id=session_id,
-            procedure_name=procedure_name,
-            scene=scene,
-        )
-        db.add(row)
-    else:
-        if procedure_name and not row.procedure_name:
-            row.procedure_name = procedure_name
-        if scene:
-            row.scene = scene
-    db.commit()
-    db.refresh(row)
-    return row
-
-
-def _build_recommendation_items(
-    *,
-    query: str,
-    procedure: Optional[str],
-    topics: list[str],
-    scene: Optional[str],
-) -> list[RecommendationItem]:
-    active_scene = scene or "learning"
-    items: list[RecommendationItem] = []
-    source_map = {
-        "anatomy": ("reference", "image"),
-        "disease_background": ("review", "text"),
-        "operative_steps": ("guideline", "text"),
-        "risk_points": ("guideline", "text"),
-        "complications": ("case", "text"),
-        "bailout_strategy": ("case", "video"),
-    }
-    for topic in topics[:3]:
-        source_type, modality = source_map.get(topic, ("review", "text"))
-        items.append(
-            RecommendationItem(
-                title=f"{procedure or 'general'} {topic} for {active_scene}",
-                procedure=procedure,
-                topic=topic,
-                source_type=source_type,
-                modality=modality,
-                reason=f"Based on query '{query[:40]}' and scene '{active_scene}', this topic is a high-priority next step.",
-            )
-        )
-    return items
 
 
 def _update_session_context_for_collect(
@@ -657,62 +557,6 @@ def _submit_job_record(
     _cache_job_status_snapshot(_build_job_status_response(row))
     app.state.job_queue.submit(job_id)
     return JobSubmitResponse(job_id=job_id, session_id=session_id, status="queued")
-
-
-def _save_recommendation_log(
-    db: Session,
-    *,
-    session_id: str,
-    user_id: Optional[int],
-    query: str,
-    procedure_name: Optional[str],
-    topic: Optional[str],
-    recommendations: list[RecommendationItem],
-) -> None:
-    row = RecommendationLogRecord(
-        session_id=session_id,
-        user_id=user_id,
-        query=query,
-        procedure_name=procedure_name,
-        topic=topic,
-        recommendations_json=json.dumps([item.model_dump() for item in recommendations], ensure_ascii=False),
-    )
-    db.add(row)
-    db.commit()
-
-
-def _build_learning_session_report(
-    db: Session,
-    *,
-    session_id: str,
-) -> LearningSessionReportResponse:
-    context = _load_session_context(db, session_id)
-    turns = context.get("recent_turns", [])
-    joined_text = " ".join(f"{turn.get('query', '')} {turn.get('report', '')}" for turn in turns)
-    procedure, covered_topics = _infer_procedure_and_topics(joined_text)
-    unique_topics = list(dict.fromkeys(covered_topics))
-    recommended_next_topics = [topic for topic in ["anatomy", "risk_points", "complications", "bailout_strategy"] if topic not in unique_topics][:3]
-    weak_topics = recommended_next_topics[:2]
-    recommended_items = _build_recommendation_items(
-        query=joined_text or session_id,
-        procedure=procedure,
-        topics=recommended_next_topics or unique_topics,
-        scene="learning",
-    )
-    summary = (
-        f"Session {session_id} focused on {procedure or 'general hepatobiliary learning'}. "
-        f"Covered topics: {', '.join(unique_topics) if unique_topics else 'none captured yet'}. "
-        f"Suggested next topics: {', '.join(recommended_next_topics) if recommended_next_topics else 'continue deepening current topics'}."
-    )
-    return LearningSessionReportResponse(
-        session_id=session_id,
-        procedure=procedure,
-        covered_topics=unique_topics,
-        weak_topics=weak_topics,
-        recommended_next_topics=recommended_next_topics,
-        recommended_next_materials=recommended_items,
-        summary=summary,
-    )
 
 
 def _build_dispatch_decision(
@@ -1038,9 +882,9 @@ def answer(
         image_path=image_path,
         reviewer_enabled=body.reviewer_enabled,
     )
-    procedure, _topics = _infer_procedure_and_topics(body.query)
-    _upsert_learning_session(db, session_id=session_id, procedure_name=procedure, scene="answer")
-    return _build_answer_response(consult_response, query=body.query)
+    procedure, _topics = infer_procedure_and_topics(body.query)
+    upsert_learning_session(db, session_id=session_id, procedure_name=procedure, scene="answer")
+    return build_answer_response(consult_response, query=body.query)
 
 
 @app.post(
@@ -1054,34 +898,13 @@ def recommend(
     db: Annotated[Session, Depends(get_db)],
 ) -> RecommendResponse:
     session_id = (body.session_id or "").strip() or str(uuid.uuid4())
-    procedure, topics = _infer_procedure_and_topics(f"{body.procedure or ''} {body.query}")
-    procedure = (body.procedure or "").strip() or procedure
-    scene = (body.scene or "").strip() or "learning"
-    items = _build_recommendation_items(
-        query=body.query,
-        procedure=procedure,
-        topics=topics,
-        scene=scene,
-    )
-    topic_grouping = {item.topic: [item.title] for item in items}
-    _upsert_learning_session(db, session_id=session_id, procedure_name=procedure, scene=scene)
-    _save_recommendation_log(
+    return build_recommend_response(
         db,
+        query=body.query,
         session_id=session_id,
         user_id=body.user_id,
-        query=body.query,
-        procedure_name=procedure,
-        topic=topics[0] if topics else None,
-        recommendations=items,
-    )
-    return RecommendResponse(
-        session_id=session_id,
-        procedure=procedure,
-        scene=scene,
-        recommended_materials=items,
-        topic_grouping=topic_grouping,
-        recommend_reason="Current recommendation is generated from procedure/topic heuristics and is ready to be replaced by a dedicated Java recommendation service later.",
-        next_step="Pick one recommended topic and then use Answer for a focused follow-up question.",
+        procedure=body.procedure,
+        scene=body.scene,
     )
 
 
@@ -1095,13 +918,12 @@ def report_learning_session(
     body: LearningSessionReportRequest,
     db: Annotated[Session, Depends(get_db)],
 ) -> LearningSessionReportResponse:
-    report = _build_learning_session_report(db, session_id=body.session_id)
-    _upsert_learning_session(
-        db,
+    context = _load_session_context(db, body.session_id)
+    report = build_learning_session_report(
         session_id=body.session_id,
-        procedure_name=report.procedure,
-        scene="learning_session_report",
+        context=context,
     )
+    upsert_learning_session(db, session_id=body.session_id, procedure_name=report.procedure, scene="learning_session_report")
     return report
 
 

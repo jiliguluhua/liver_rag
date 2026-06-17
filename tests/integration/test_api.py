@@ -126,6 +126,88 @@ def test_collect_endpoint_returns_follow_up_questions(monkeypatch, tmp_path):
     assert payload["collected_context"]["recent_turns"]
 
 
+def test_answer_endpoint_returns_answer_payload(monkeypatch, tmp_path):
+    client, _session = _make_client(monkeypatch, tmp_path)
+
+    def fake_run_consultation(**kwargs):
+        return api_main.ConsultResponse(
+            report="answer body",
+            preview_image_base64=None,
+            consultation_id=101,
+            session_id=kwargs["session_id"],
+            status="completed",
+            intent="education",
+            perception_status="skipped",
+            warnings=[],
+            errors=[],
+            evidence=[],
+            trace=[],
+        )
+
+    monkeypatch.setattr(api_main, "_run_consultation", fake_run_consultation)
+
+    response = client.post(
+        "/v1/answer",
+        json={"query": "Explain Calot triangle in cholecystectomy"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["answer"] == "answer body"
+    assert "anatomy" in payload["related_topics"]
+
+
+def test_recommend_endpoint_returns_material_candidates(monkeypatch, tmp_path):
+    client, _session = _make_client(monkeypatch, tmp_path)
+
+    response = client.post(
+        "/v1/recommend",
+        json={"query": "I want to review bile duct injury after cholecystectomy", "scene": "postop_review"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["recommended_materials"]
+    assert payload["scene"] == "postop_review"
+
+
+def test_learning_session_report_endpoint_summarizes_session(monkeypatch, tmp_path):
+    client, TestingSessionLocal = _make_client(monkeypatch, tmp_path)
+
+    db = TestingSessionLocal()
+    try:
+        db.add(
+            IntakeMessageRecord(
+                session_id="learning-session-1",
+                query="Review anatomy in cholecystectomy",
+                assistant_message="Discussed Calot triangle anatomy.",
+                image_path=None,
+            )
+        )
+        db.add(
+            ConsultationRecord(
+                session_id="learning-session-1",
+                query="What are common complications after cholecystectomy?",
+                report="Covered bile duct injury and bile leak.",
+                image_path=None,
+                has_preview=False,
+            )
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    response = client.post(
+        "/v1/report/learning-session",
+        json={"session_id": "learning-session-1"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["session_id"] == "learning-session-1"
+    assert payload["covered_topics"]
+
+
 def test_dispatch_endpoint_returns_sync_result_in_auto_mode(monkeypatch, tmp_path):
     client, _session = _make_client(monkeypatch, tmp_path)
 

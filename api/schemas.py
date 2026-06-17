@@ -106,3 +106,63 @@ class CollectResponse(BaseModel):
     context_turn_count: int = 0
     latest_image_path: Optional[str] = None
     collected_context: dict[str, Any] = Field(default_factory=dict)
+
+
+class AnswerRequest(ConsultRequest):
+    pass
+
+
+class AnswerResponse(BaseModel):
+    answer: str
+    consultation_id: int
+    session_id: str
+    status: str
+    intent: Optional[str] = None
+    perception_status: Optional[str] = None
+    evidence: list[dict[str, Any]] = Field(default_factory=list)
+    related_topics: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+    trace: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class RecommendRequest(BaseModel):
+    query: str = Field(..., min_length=1)
+    session_id: Optional[str] = Field(default=None)
+    user_id: Optional[int] = Field(default=None)
+    procedure: Optional[str] = Field(default=None)
+    scene: Optional[str] = Field(default=None)
+
+
+class RecommendationItem(BaseModel):
+    title: str
+    procedure: Optional[str] = None
+    topic: str
+    source_type: str
+    modality: str
+    reason: str
+
+
+class RecommendResponse(BaseModel):
+    session_id: str
+    procedure: Optional[str] = None
+    scene: Optional[str] = None
+    recommended_materials: list[RecommendationItem] = Field(default_factory=list)
+    topic_grouping: dict[str, list[str]] = Field(default_factory=dict)
+    recommend_reason: str
+    next_step: str
+
+
+class LearningSessionReportRequest(BaseModel):
+    session_id: str = Field(..., min_length=1)
+    user_id: Optional[int] = Field(default=None)
+
+
+class LearningSessionReportResponse(BaseModel):
+    session_id: str
+    procedure: Optional[str] = None
+    covered_topics: list[str] = Field(default_factory=list)
+    weak_topics: list[str] = Field(default_factory=list)
+    recommended_next_topics: list[str] = Field(default_factory=list)
+    recommended_next_materials: list[RecommendationItem] = Field(default_factory=list)
+    summary: str

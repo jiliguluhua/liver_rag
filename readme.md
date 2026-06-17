@@ -21,6 +21,7 @@
 
 - API 接口说明见：[docs/api_documentation.md](C:/Users/21204/Desktop/liver-rag/docs/api_documentation.md:1)
 - 后端架构说明见：[docs/backend_architecture.md](C:/Users/21204/Desktop/liver-rag/docs/backend_architecture.md:1)
+- 新知识服务架构设计见：[docs/knowledge_service_architecture_v1.md](C:/Users/21204/Desktop/liver-rag/docs/knowledge_service_architecture_v1.md:1)
 
 ## 项目结构
 

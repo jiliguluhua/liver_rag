@@ -2,7 +2,7 @@
 
 ## 1. 文档定位
 
-这份文档用于定义项目下一阶段的业务主线与系统架构，作为后续重构的设计依据。
+这份文档用于定义项目下一阶段的业务主线与系统架构，作为后续重构前的设计依据。
 
 它不替代现有的后端实现说明，而是在现有系统之上提出新的上层业务组织方式，用来回答三个问题：
 
@@ -12,7 +12,7 @@
 
 当前建议将这份文档与既有文档并行维护：
 
-- [backend_architecture.md](C:/Users/21204/Desktop/liver-rag/docs/backend_architecture.md:1)：描述现有 Python 后端与工作流实现
+- [backend_architecture.md](C:/Users/21204/Desktop/liver-rag/docs/backend_architecture.md:1)：描述现有后端与工作流实现
 - [api_documentation.md](C:/Users/21204/Desktop/liver-rag/docs/api_documentation.md:1)：描述现有接口
 - 本文档：描述新的业务架构主线与分阶段建设目标
 
@@ -41,7 +41,7 @@
 
 建议统一这样描述产品线：
 
-“系统以肝胆术式为主线，围绕解剖、疾病病理基础、指南证据、病例复盘和图像材料构建统一知识底座，根据用户问题和学习场景同时支持病例回答、知识推荐与学习阶段总结，并预留视频事件扩展接口。”
+“系统以肝胆术式为主线，围绕指南证据、病例材料、解剖主题、疾病与病理基础以及图像/视频载体构建统一知识底座，根据用户问题和学习场景同时支持病例回答、知识推荐与学习阶段总结。”
 
 ## 4. 核心设计原则
 
@@ -167,31 +167,59 @@ cholecystectomy
   -> risk_points
   -> complications
   -> bailout_strategy
-  -> image
-  -> video_events (reserved)
 ```
 
-### 6.3 材料类型
+### 6.3 Material 最简分类方案
 
-当前建议的语料类型为 `5+1`：
+为了避免把“来源类型”“知识主题”“模态类型”混在一起，第一版建议只用 3 个基础字段描述 `Material`：
+
+- `source_type`：材料来源类型
+- `topic`：知识主题
+- `modality`：材料模态
+
+建议的第一版取值如下。
+
+`source_type`
 
 - `guideline`
+- `review`
 - `case`
+- `reference`
+
+`topic`
+
 - `anatomy`
-- `disease_knowledge`
+- `disease_background`
+- `operative_steps`
+- `risk_points`
+- `complications`
+- `bailout_strategy`
+
+`modality`
+
+- `text`
 - `image`
-- `video_event`（reserved）
+- `video`
 
-这里不是放弃“病例/医学文档”，而是将它们纳入更高层的知识组织方式中。
+这三个字段分别解决三个问题：
 
-也就是说：
+- `source_type`：这条材料从哪来
+- `topic`：这条材料讲什么
+- `modality`：这条材料是什么形式
 
-- 原来的病例、指南、综述、解剖材料仍然保留
-- 只是统一作为 `Material` 挂接到 `Procedure -> Topic` 之下
+这样就可以避免把 `case/guideline/review` 和 `anatomy/image` 放在同一层硬并列。
+
+例如：
+
+- 一篇 Calot triangle 综述：`source_type=review`，`topic=anatomy`，`modality=text`
+- 一张胆道变异示意图：`source_type=reference`，`topic=anatomy`，`modality=image`
+- 一篇胆管损伤病例复盘：`source_type=case`，`topic=complications`，`modality=text`
+
+这里并不是放弃原来的病例、指南、解剖或图像材料，而是把它们统一挂接到 `Procedure -> Topic -> Material` 之下，再用这 3 个字段说明它们的属性。
 
 ## 7. 三条能力线
 
-## 7.1 Answer Line
+### 7.1 Answer Line
 
 定位：回答当前问题。
 
@@ -220,7 +248,7 @@ cholecystectomy
 - 以问题为中心
 - 弱依赖用户画像
 
-## 7.2 Recommend Line
+### 7.2 Recommend Line
 
 定位：给出下一步学习材料建议。
 
@@ -251,7 +279,7 @@ cholecystectomy
 - 以学习目标和用户状态为中心
 - 强依赖用户画像
 
-## 7.3 Learning Session Report Line
+### 7.3 Learning Session Report Line
 
 定位：对一段学习过程做阶段性沉淀。
 
@@ -310,7 +338,7 @@ cholecystectomy
 职责：
 
 - 统一检索知识材料
-- 支持按术式、topic、类型、场景过滤
+- 支持按术式、`source_type`、`topic`、`modality` 过滤
 - 支持图文混合材料召回
 
 ### 8.5 `recommendation-service`
@@ -386,6 +414,7 @@ cholecystectomy
 - `Session Memory` 继续用于短期上下文
 - `UserProfile` 用于长期个性化
 - `LearningSession` 用于总结和阶段报告
+- `Material` 第一版只强制要求维护 `source_type`、`topic`、`modality` 三个基础字段，其他字段后续逐步补齐
 
 ## 11. 分阶段建设建议
 
@@ -399,7 +428,7 @@ cholecystectomy
 
 - 明确产品主线为 `Answer + Recommend + Learning Session Report`
 - 明确 `Procedure -> Topic -> Material` 作为核心数据模型
-- 定下 `5+1` 材料类型：`guideline / case / anatomy / disease_knowledge / image / video_event(reserved)`
+- 定下 `Material` 的最简三层分类：`source_type + topic + modality`
 - 前端显式区分 `Answer` 和 `Recommend`
 - `Answer` 先做问题驱动链路
 - `Recommend` 先做基础场景推荐链路
@@ -418,7 +447,7 @@ cholecystectomy
 - 维护 learning session 内的学习轨迹
 - 生成 `Learning Session Report`
 - 逐步把图片材料纳入推荐和展示主链路
-- 为未来 `video_event` 预留扩展点
+- 逐步扩展 `video` 模态在手术视频场景中的应用
 
 这一阶段完成后，系统才真正具备“持续学习推荐”的味道。
 
@@ -431,5 +460,4 @@ cholecystectomy
 - `Report` 只保留为阶段性学习总结能力
 - 如果要做长期推荐和学习总结，就需要正式引入用户表
 
-
-后期改进路线：知识点卡片（前端展示） 知识图谱
+后期改进路线：知识点卡片（前端展示）、知识图谱。

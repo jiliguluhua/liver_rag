@@ -423,6 +423,14 @@ cholecystectomy
 
 ### 11.0 Java / Python 边界
 
+补充决策说明（2026-06-22）：
+
+- 这条边界不再保留“推荐链路先放 Python、后续再迁”的过渡方案
+- 所有明确属于稳定业务系统的能力，直接收缩到 Java
+- `Recommend`、`UserProfile`、`LearningSession`、推荐日志、反馈回写，都按 Java 主服务来设计
+- Python 只保留 `Answer` 内核、RAG、影像感知、模型推理和可被 Java 调用的 AI 工具能力
+- 即使后续推荐里引入 LLM rerank，也应保持“Java 编排业务主链路，Python 提供 AI 子能力”的结构
+
 为了避免技术栈职责重叠，当前建议的边界如下。
 稳定业务系统放 Java，快速迭代的 AI 推理流程放 Python。
 

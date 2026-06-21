@@ -99,6 +99,6 @@ def build_recommend_response(
         scene=active_scene,
         recommended_materials=items,
         topic_grouping={item.topic: [item.title] for item in items},
-        recommend_reason="Current recommendation is generated from procedure/topic heuristics and is ready to be replaced by a dedicated recommendation service later.",
+        recommend_reason="Current recommendation is generated from procedure/topic heuristics and is ready to be replaced by a dedicated Java recommendation service.",
         next_step="Pick one recommended topic and then use Answer for a focused follow-up question.",
     )

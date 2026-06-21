@@ -189,3 +189,9 @@ pytest tests
 
 - `legacy/` 用于暂存旧实现或实验性模块，不属于当前主链路
 - `skills/` 当前仅作为预留目录，不承载主流程代码
+
+## 技术边界补充
+
+- Java：承接稳定业务主链路，包括用户体系、用户画像、推荐服务、反馈闭环、学习会话与长期存储
+- Python：承接 AI 能力主链路，包括 `Answer`、RAG、LangGraph 工作流、影像感知与模型推理
+- 关于推荐能力：后续默认收口到 Java，不再把正式 `Recommend` 业务壳继续铺在 Python/FastAPI 里

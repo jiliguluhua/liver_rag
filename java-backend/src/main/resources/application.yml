@@ -4,6 +4,9 @@ server:
 spring:
   application:
     name: knowledge-service
+  autoconfigure:
+    exclude:
+      - org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration
 
 knowledge:
   sqlite-path: ../data/liver_rag_api.db

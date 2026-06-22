@@ -1,0 +1,17 @@
+com\liverrag\knowledge\dto\ProfileAnalyzeResponse.class
+com\liverrag\knowledge\model\RecommendationFeedback.class
+com\liverrag\knowledge\model\RecommendationLog.class
+com\liverrag\knowledge\dto\RecommendRequest.class
+com\liverrag\knowledge\service\SessionHistoryProfileService.class
+com\liverrag\knowledge\dto\RecommendResponse.class
+com\liverrag\knowledge\service\ProfileService.class
+com\liverrag\knowledge\KnowledgeServiceApplication.class
+com\liverrag\knowledge\service\RecommendationService.class
+com\liverrag\knowledge\service\SessionHistoryProfileService$SessionTurn.class
+com\liverrag\knowledge\dto\RecommendationFeedbackRequest.class
+com\liverrag\knowledge\dto\RecommendationFeedbackResponse.class
+com\liverrag\knowledge\controller\RecommendationController.class
+com\liverrag\knowledge\model\UserProfile.class
+com\liverrag\knowledge\service\SessionHistoryProfileService$Counter.class
+com\liverrag\knowledge\dto\ProfileAnalyzeRequest.class
+com\liverrag\knowledge\model\RecommendationItem.class

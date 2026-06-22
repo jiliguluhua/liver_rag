@@ -1,0 +1,15 @@
+C:\Users\21204\Desktop\liver-rag\java-backend\src\main\java\com\liverrag\knowledge\controller\RecommendationController.java
+C:\Users\21204\Desktop\liver-rag\java-backend\src\main\java\com\liverrag\knowledge\dto\ProfileAnalyzeRequest.java
+C:\Users\21204\Desktop\liver-rag\java-backend\src\main\java\com\liverrag\knowledge\dto\ProfileAnalyzeResponse.java
+C:\Users\21204\Desktop\liver-rag\java-backend\src\main\java\com\liverrag\knowledge\dto\RecommendationFeedbackRequest.java
+C:\Users\21204\Desktop\liver-rag\java-backend\src\main\java\com\liverrag\knowledge\dto\RecommendationFeedbackResponse.java
+C:\Users\21204\Desktop\liver-rag\java-backend\src\main\java\com\liverrag\knowledge\dto\RecommendRequest.java
+C:\Users\21204\Desktop\liver-rag\java-backend\src\main\java\com\liverrag\knowledge\dto\RecommendResponse.java
+C:\Users\21204\Desktop\liver-rag\java-backend\src\main\java\com\liverrag\knowledge\KnowledgeServiceApplication.java
+C:\Users\21204\Desktop\liver-rag\java-backend\src\main\java\com\liverrag\knowledge\model\RecommendationFeedback.java
+C:\Users\21204\Desktop\liver-rag\java-backend\src\main\java\com\liverrag\knowledge\model\RecommendationItem.java
+C:\Users\21204\Desktop\liver-rag\java-backend\src\main\java\com\liverrag\knowledge\model\RecommendationLog.java
+C:\Users\21204\Desktop\liver-rag\java-backend\src\main\java\com\liverrag\knowledge\model\UserProfile.java
+C:\Users\21204\Desktop\liver-rag\java-backend\src\main\java\com\liverrag\knowledge\service\ProfileService.java
+C:\Users\21204\Desktop\liver-rag\java-backend\src\main\java\com\liverrag\knowledge\service\RecommendationService.java
+C:\Users\21204\Desktop\liver-rag\java-backend\src\main\java\com\liverrag\knowledge\service\SessionHistoryProfileService.java

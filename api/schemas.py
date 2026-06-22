@@ -158,6 +158,26 @@ class LearningSessionReportRequest(BaseModel):
     user_id: Optional[int] = Field(default=None)
 
 
+class ProfileAnalysisRequest(BaseModel):
+    session_id: str = Field(..., min_length=1)
+    user_id: Optional[int] = Field(default=None)
+    max_turns: int = Field(default=10, ge=1, le=50)
+
+
+class ProfileAnalysisResponse(BaseModel):
+    session_id: str
+    inferred_user_label: str
+    role: Optional[str] = None
+    level: str
+    preferred_procedures: list[str] = Field(default_factory=list)
+    preferred_topics: list[str] = Field(default_factory=list)
+    preferred_modalities: list[str] = Field(default_factory=list)
+    learning_goal: str
+    recent_focus: list[str] = Field(default_factory=list)
+    evidence_queries: list[str] = Field(default_factory=list)
+    profile_summary: str
+
+
 class LearningSessionReportResponse(BaseModel):
     session_id: str
     procedure: Optional[str] = None

@@ -208,6 +208,46 @@ def test_learning_session_report_endpoint_summarizes_session(monkeypatch, tmp_pa
     assert payload["covered_topics"]
 
 
+def test_profile_analysis_endpoint_summarizes_session_history(monkeypatch, tmp_path):
+    client, TestingSessionLocal = _make_client(monkeypatch, tmp_path)
+
+    db = TestingSessionLocal()
+    try:
+        db.add_all(
+            [
+                IntakeMessageRecord(
+                    session_id="profile-session-1",
+                    query="Review anatomy in cholecystectomy",
+                    assistant_message="We discussed Calot triangle basics.",
+                    image_path=None,
+                ),
+                ConsultationRecord(
+                    session_id="profile-session-1",
+                    query="What are common bile duct injury risk points after cholecystectomy?",
+                    report="Covered risk points and complications.",
+                    image_path=None,
+                    has_preview=False,
+                ),
+            ]
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    response = client.post(
+        "/v1/profile/analyze",
+        json={"session_id": "profile-session-1", "max_turns": 10},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["session_id"] == "profile-session-1"
+    assert payload["preferred_procedures"]
+    assert payload["preferred_topics"]
+    assert payload["evidence_queries"]
+    assert payload["profile_summary"]
+
+
 def test_dispatch_endpoint_returns_sync_result_in_auto_mode(monkeypatch, tmp_path):
     client, _session = _make_client(monkeypatch, tmp_path)
 

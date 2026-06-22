@@ -34,6 +34,8 @@ from api.schemas import (
     JobSubmitResponse,
     LearningSessionReportRequest,
     LearningSessionReportResponse,
+    ProfileAnalysisRequest,
+    ProfileAnalysisResponse,
     RecommendRequest,
     RecommendResponse,
     ReportResponse,
@@ -52,6 +54,7 @@ from services.medical_agent import LiverSmartAgent
 from services.redis_store import redis_store
 from services.answer_service import build_answer_response
 from services.learning_service import upsert_learning_session
+from services.profile_service import build_profile_analysis
 from services.recommendation_service import build_recommend_response
 from services.report_service import build_learning_session_report
 from services.topic_parser import infer_procedure_and_topics
@@ -885,6 +888,61 @@ def answer(
     procedure, _topics = infer_procedure_and_topics(body.query)
     upsert_learning_session(db, session_id=session_id, procedure_name=procedure, scene="answer")
     return build_answer_response(consult_response, query=body.query)
+
+
+@app.post(
+    "/v1/profile/analyze",
+    response_model=ProfileAnalysisResponse,
+    tags=["knowledge"],
+    dependencies=[Depends(_optional_service_auth)],
+)
+def analyze_profile(
+    body: ProfileAnalysisRequest,
+    db: Annotated[Session, Depends(get_db)],
+) -> ProfileAnalysisResponse:
+    context = _load_session_context(db, body.session_id)
+    turns = list(context.get("recent_turns", []))
+    if len(turns) < body.max_turns:
+        intake_rows = (
+            db.query(IntakeMessageRecord)
+            .filter(IntakeMessageRecord.session_id == body.session_id)
+            .order_by(IntakeMessageRecord.created_at.asc())
+            .all()
+        )
+        consult_rows = (
+            db.query(ConsultationRecord)
+            .filter(ConsultationRecord.session_id == body.session_id)
+            .order_by(ConsultationRecord.created_at.asc())
+            .all()
+        )
+        merged_turns: list[dict] = []
+        for row in intake_rows:
+            merged_turns.append(
+                {
+                    "query": row.query,
+                    "report": row.assistant_message,
+                    "created_at": row.created_at.isoformat(),
+                    "image_path": row.image_path,
+                    "stage": "collect",
+                }
+            )
+        for row in consult_rows:
+            merged_turns.append(
+                {
+                    "query": row.query,
+                    "report": row.report,
+                    "created_at": row.created_at.isoformat(),
+                    "image_path": row.image_path,
+                    "stage": "report",
+                }
+            )
+        merged_turns.sort(key=lambda item: str(item.get("created_at", "")))
+        turns = merged_turns[-body.max_turns :]
+    return build_profile_analysis(
+        session_id=body.session_id,
+        turns=turns,
+        user_id=body.user_id,
+    )
 
 
 @app.post(

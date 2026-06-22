@@ -12,6 +12,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Annotated, Optional
 
+import requests
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, StreamingResponse
@@ -130,6 +131,33 @@ def _resolve_cache_paths(content_hash: str) -> tuple[Path, Path]:
     cache_dir = Path(config.UPLOAD_CACHE_DIR) / content_hash
     cached_file_path = cache_dir / "image.nii.gz"
     return cache_dir, cached_file_path
+
+
+def _analyze_profile_via_java(body: ProfileAnalysisRequest) -> Optional[ProfileAnalysisResponse]:
+    base_url = (config.KNOWLEDGE_SERVICE_URL or "").strip().rstrip("/")
+    if not base_url:
+        return None
+
+    headers: dict[str, str] = {}
+    if config.SERVICE_API_KEY:
+        headers["X-API-Key"] = config.SERVICE_API_KEY
+
+    try:
+        response = requests.post(
+            f"{base_url}/api/v1/profile/analyze",
+            json={
+                "session_id": body.session_id,
+                "user_id": body.user_id,
+                "max_turns": body.max_turns,
+            },
+            headers=headers,
+            timeout=10,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        return ProfileAnalysisResponse.model_validate(payload)
+    except (requests.RequestException, ValueError):
+        return None
 
 
 def _save_consultation(
@@ -886,6 +914,10 @@ def analyze_profile(
     body: ProfileAnalysisRequest,
     db: Annotated[Session, Depends(get_db)],
 ) -> ProfileAnalysisResponse:
+    java_response = _analyze_profile_via_java(body)
+    if java_response is not None:
+        return java_response
+
     context = _load_session_context(db, body.session_id)
     turns = list(context.get("recent_turns", []))
     if len(turns) < body.max_turns:

@@ -211,6 +211,8 @@ def test_learning_session_report_endpoint_summarizes_session(monkeypatch, tmp_pa
 def test_profile_analysis_endpoint_summarizes_session_history(monkeypatch, tmp_path):
     client, TestingSessionLocal = _make_client(monkeypatch, tmp_path)
 
+    monkeypatch.setattr(api_main, "_analyze_profile_via_java", lambda body: None)
+
     db = TestingSessionLocal()
     try:
         db.add_all(
@@ -246,6 +248,38 @@ def test_profile_analysis_endpoint_summarizes_session_history(monkeypatch, tmp_p
     assert payload["preferred_topics"]
     assert payload["evidence_queries"]
     assert payload["profile_summary"]
+
+
+def test_profile_analysis_endpoint_prefers_java_service_response(monkeypatch, tmp_path):
+    client, _session = _make_client(monkeypatch, tmp_path)
+
+    monkeypatch.setattr(
+        api_main,
+        "_analyze_profile_via_java",
+        lambda body: api_main.ProfileAnalysisResponse(
+            session_id=body.session_id,
+            inferred_user_label="user-42",
+            role="hepatobiliary learner",
+            level="advanced",
+            preferred_procedures=["hepatectomy"],
+            preferred_topics=["operative_steps"],
+            preferred_modalities=["text"],
+            learning_goal="operative mastery",
+            recent_focus=["operative_steps", "hepatectomy"],
+            evidence_queries=["mock query"],
+            profile_summary="returned by java",
+        ),
+    )
+
+    response = client.post(
+        "/v1/profile/analyze",
+        json={"session_id": "profile-session-java", "user_id": 42, "max_turns": 10},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["inferred_user_label"] == "user-42"
+    assert payload["profile_summary"] == "returned by java"
 
 
 def test_report_endpoint_returns_sync_result_in_auto_mode(monkeypatch, tmp_path):

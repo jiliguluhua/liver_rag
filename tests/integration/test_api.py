@@ -248,7 +248,7 @@ def test_profile_analysis_endpoint_summarizes_session_history(monkeypatch, tmp_p
     assert payload["profile_summary"]
 
 
-def test_dispatch_endpoint_returns_sync_result_in_auto_mode(monkeypatch, tmp_path):
+def test_report_endpoint_returns_sync_result_in_auto_mode(monkeypatch, tmp_path):
     client, _session = _make_client(monkeypatch, tmp_path)
 
     monkeypatch.setattr(
@@ -266,7 +266,7 @@ def test_dispatch_endpoint_returns_sync_result_in_auto_mode(monkeypatch, tmp_pat
 
     def fake_run_consultation(**kwargs):
         return api_main.ConsultResponse(
-            report="dispatch sync report",
+            report="report sync result",
             preview_image_base64=None,
             consultation_id=11,
             session_id=kwargs["session_id"],
@@ -282,7 +282,7 @@ def test_dispatch_endpoint_returns_sync_result_in_auto_mode(monkeypatch, tmp_pat
     monkeypatch.setattr(api_main, "_run_consultation", fake_run_consultation)
 
     response = client.post(
-        "/v1/dispatch",
+        "/v1/report",
         params={"dispatch_mode": "auto"},
         json={"query": "summarize guideline follow-up", "reviewer_enabled": True},
     )
@@ -290,11 +290,11 @@ def test_dispatch_endpoint_returns_sync_result_in_auto_mode(monkeypatch, tmp_pat
     assert response.status_code == 200
     payload = response.json()
     assert payload["mode"] == "sync"
-    assert payload["result"]["report"] == "dispatch sync report"
+    assert payload["result"]["report"] == "report sync result"
     assert payload["job"] is None
 
 
-def test_dispatch_endpoint_returns_job_in_auto_mode_when_perception_needed(monkeypatch, tmp_path):
+def test_report_endpoint_returns_job_in_auto_mode_when_perception_needed(monkeypatch, tmp_path):
     client, TestingSessionLocal = _make_client(monkeypatch, tmp_path)
 
     monkeypatch.setattr(
@@ -311,7 +311,7 @@ def test_dispatch_endpoint_returns_job_in_auto_mode_when_perception_needed(monke
     )
 
     response = client.post(
-        "/v1/dispatch",
+        "/v1/report",
         params={"dispatch_mode": "auto"},
         json={
             "query": "analyze lesion volume",
@@ -335,7 +335,7 @@ def test_dispatch_endpoint_returns_job_in_auto_mode_when_perception_needed(monke
         db.close()
 
 
-def test_dispatch_endpoint_honors_forced_sync(monkeypatch, tmp_path):
+def test_report_endpoint_honors_forced_sync(monkeypatch, tmp_path):
     client, _session = _make_client(monkeypatch, tmp_path)
 
     monkeypatch.setattr(
@@ -369,7 +369,7 @@ def test_dispatch_endpoint_honors_forced_sync(monkeypatch, tmp_path):
     monkeypatch.setattr(api_main, "_run_consultation", fake_run_consultation)
 
     response = client.post(
-        "/v1/dispatch",
+        "/v1/report",
         params={"dispatch_mode": "sync"},
         json={
             "query": "analyze lesion volume",
@@ -385,7 +385,7 @@ def test_dispatch_endpoint_honors_forced_sync(monkeypatch, tmp_path):
     assert payload["job"] is None
 
 
-def test_dispatch_upload_returns_async_job_when_auto_mode_needs_perception(monkeypatch, tmp_path):
+def test_report_upload_returns_async_job_when_auto_mode_needs_perception(monkeypatch, tmp_path):
     client, _session = _make_client(monkeypatch, tmp_path)
 
     monkeypatch.setattr(api_main.config, "UPLOADS_DIR", str(tmp_path / "uploads"))
@@ -404,7 +404,7 @@ def test_dispatch_upload_returns_async_job_when_auto_mode_needs_perception(monke
     )
 
     response = client.post(
-        "/v1/dispatch/upload",
+        "/v1/report/upload",
         data={"query": "analyze uploaded nifti", "reviewer_enabled": "true", "dispatch_mode": "auto"},
         files={"image_file": ("scan.nii.gz", b"fake-nifti-content", "application/gzip")},
     )

@@ -23,8 +23,6 @@
 
 - `POST /v1/consult`
 - `POST /v1/consult/upload`
-- `POST /v1/dispatch`
-- `POST /v1/dispatch/upload`
 
 ## 认证方式
 
@@ -52,7 +50,7 @@
 - 当前 `can_generate_report` 不再作为硬门槛，而是用于前端提示与流程展示
 - 系统当前推荐主流程已收敛为：`collect` / `collect/upload` -> `report`
 - `jobs` / `jobs/upload` 保留为显式异步能力入口，适合展示后台任务、SSE 与事件分发能力
-- `consult`、`consult/upload`、`dispatch`、`dispatch/upload` 当前属于兼容保留接口；若后续继续收口接口体系，这几组入口是优先可以弱化或移除的对象
+- `consult`、`consult/upload` 当前属于兼容保留接口；若后续继续收口接口体系，这两组入口是优先可以弱化或移除的对象
 
 ## 元信息接口
 
@@ -204,6 +202,7 @@
 - 当前代码中的正式报告核心逻辑统一复用同一套 `run -> graph -> persist` 流程
 - 这是当前推荐的正式报告入口，应优先于 `consult` 使用
 - 若后续进一步收口接口体系，`report` 应保留为唯一正式报告主入口
+- `report` 现在也承担同步/异步自动分流能力，可通过 `dispatch_mode` 指定 `auto`、`sync`、`async`
 
 同步返回时，响应结构与 `POST /v1/consult` 一致，例如：
 
@@ -344,7 +343,7 @@
 
 - 正式报告生成在工程实现上支持异步任务执行
 - 当前更适合将 `jobs` 理解为显式异步能力入口，而不是多轮 intake 的主入口
-- 当通过 `dispatch` 被判定为异步时，最终也会落到同一套 job 任务体系
+- 当 `report` 被判定为异步时，最终会落到同一套 job 任务体系
 - 这组接口建议保留，用于展示异步任务、任务持久化、SSE 与 Redis 事件分发能力
 
 ### `POST /v1/jobs`

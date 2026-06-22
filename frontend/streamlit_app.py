@@ -43,14 +43,14 @@ def _call_backend_json(backend_url: str, service_api_key: str, payload: dict) ->
     return response.json()
 
 
-def _dispatch_backend_json(
+def _report_backend_json(
     backend_url: str,
     service_api_key: str,
     payload: dict,
     dispatch_mode: str,
 ) -> dict:
     response = requests.post(
-        f"{backend_url.rstrip('/')}/v1/dispatch",
+        f"{backend_url.rstrip('/')}/v1/report",
         params={"dispatch_mode": dispatch_mode},
         json=payload,
         headers=_headers(service_api_key),
@@ -82,7 +82,7 @@ def _call_backend_upload(
     return response.json()
 
 
-def _dispatch_backend_upload(
+def _report_backend_upload(
     backend_url: str,
     service_api_key: str,
     *,
@@ -92,7 +92,7 @@ def _dispatch_backend_upload(
     image_file,
 ) -> dict:
     response = requests.post(
-        f"{backend_url.rstrip('/')}/v1/dispatch/upload",
+        f"{backend_url.rstrip('/')}/v1/report/upload",
         data={
             "query": query,
             "reviewer_enabled": str(reviewer_enabled).lower(),
@@ -169,10 +169,10 @@ def _status_message(status: str) -> str:
     return mapping.get(status, "Task state updated.")
 
 
-def _render_dispatch_detail(dispatch_response: dict, detail_placeholder) -> None:
-    decision = dispatch_response.get("decision") or {}
+def _render_report_detail(report_response: dict, detail_placeholder) -> None:
+    decision = report_response.get("decision") or {}
     lines = [
-        f"Dispatch mode: {dispatch_response.get('mode', 'unknown')}",
+        f"Execution mode: {report_response.get('mode', 'unknown')}",
         f"Reason: {decision.get('reason', '-')}",
         f"Intent hint: {decision.get('intent_hint', '-')}",
         f"Retrieve: {decision.get('should_retrieve', False)}",
@@ -359,12 +359,12 @@ with col_chat:
                 detail = st.empty()
                 try:
                     phase.info(
-                        "Submitting upload request to backend dispatcher..."
+                        "Submitting upload request to backend report route..."
                         if image_file is not None
-                        else "Submitting consultation request to backend dispatcher..."
+                        else "Submitting report request to backend..."
                     )
-                    dispatch_response = (
-                        _dispatch_backend_upload(
+                    report_response = (
+                        _report_backend_upload(
                             backend_url=backend_url,
                             service_api_key=service_api_key,
                             query=query,
@@ -373,7 +373,7 @@ with col_chat:
                             image_file=image_file,
                         )
                         if image_file is not None
-                        else _dispatch_backend_json(
+                        else _report_backend_json(
                             backend_url=backend_url,
                             service_api_key=service_api_key,
                             dispatch_mode=dispatch_mode,
@@ -384,10 +384,10 @@ with col_chat:
                             },
                         )
                     )
-                    _render_dispatch_detail(dispatch_response, detail)
+                    _render_report_detail(report_response, detail)
 
-                    if dispatch_response.get("mode") == "async":
-                        submitted = dispatch_response.get("job") or {}
+                    if report_response.get("mode") == "async":
+                        submitted = report_response.get("job") or {}
                         job_id = submitted["job_id"]
                         phase.success(f"Job submitted successfully: {job_id}")
 
@@ -409,7 +409,7 @@ with col_chat:
                             _render_response(result, preview_placeholder)
                     else:
                         phase.success("Backend finished request processing.")
-                        response = dispatch_response.get("result") or {}
+                        response = report_response.get("result") or {}
                         _render_response(response, preview_placeholder)
                 except requests.HTTPError as exc:
                     detail_text = exc.response.text if exc.response is not None else str(exc)

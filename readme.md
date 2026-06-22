@@ -56,7 +56,7 @@ liver-rag/
 
 API 层由 [api/main.py](C:/Users/21204/Desktop/liver-rag/api/main.py:1) 提供。
 当前推荐主入口为 `/v1/collect`、`/v1/collect/upload` 与 `/v1/report`：`collect` 负责 intake 采集，`report` 负责正式报告生成，并根据是否需要影像感知决定同步返回结果还是进入异步任务链路。
-`dispatch` 与 `dispatch/upload` 目前仍保留，主要作为兼容保留的自动分流入口。
+`report` 与 `report/upload` 现在承担正式报告入口与同步/异步自动分流能力；原 `dispatch` 与 `dispatch/upload` 已下线。
 
 ## 运行方式
 
@@ -92,7 +92,7 @@ python scripts/run_graph_demo.py
 
 默认推荐入口：
 
-- 前端默认通过 `dispatch` 入口提交请求
+- 前端默认通过 `report` 入口提交请求
 - 在前端可选择 `auto`、`sync`、`async` 三种提交模式
 - `auto` 适合日常使用，后端会自动判断是否需要异步任务
 

@@ -1040,28 +1040,6 @@ def generate_report(
 
 
 @app.post(
-    "/v1/dispatch",
-    response_model=DispatchResponse,
-    tags=["agent"],
-    dependencies=[Depends(_optional_service_auth)],
-)
-def dispatch_consult(
-    body: ConsultRequest,
-    db: Annotated[Session, Depends(get_db)],
-    dispatch_mode: str = Query(default="auto", description="Dispatch mode: auto, sync, or async."),
-) -> DispatchResponse:
-    return _execute_dispatch(
-        db=db,
-        query=body.query,
-        session_id=body.session_id,
-        image_path=body.image_path,
-        reviewer_enabled=body.reviewer_enabled,
-        requested_mode=_normalize_dispatch_mode(dispatch_mode),
-        upload_present=False,
-    )
-
-
-@app.post(
     "/v1/consult/upload",
     response_model=ConsultResponse,
     tags=["agent"],
@@ -1162,66 +1140,6 @@ async def collect_upload(
             session_id=active_session_id,
             query=query,
             image_path=str(cached_file_path),
-        )
-    finally:
-        await image_file.close()
-        shutil.rmtree(session_root, ignore_errors=True)
-
-
-@app.post(
-    "/v1/dispatch/upload",
-    response_model=DispatchResponse,
-    tags=["agent"],
-    dependencies=[Depends(_optional_service_auth)],
-)
-async def dispatch_upload(
-    db: Annotated[Session, Depends(get_db)],
-    query: str = Form(...),
-    reviewer_enabled: bool = Form(default=True),
-    session_id: Optional[str] = Form(default=None),
-    dispatch_mode: str = Form(default="auto"),
-    image_file: UploadFile = File(...),
-) -> DispatchResponse:
-    filename = (image_file.filename or "").lower()
-    if not filename.endswith(".nii.gz"):
-        raise HTTPException(status_code=400, detail="Only .nii.gz uploads are supported.")
-
-    active_session_id = (session_id or "").strip() or str(uuid.uuid4())
-    session_root = Path(config.UPLOADS_DIR) / active_session_id
-    if session_root.exists():
-        shutil.rmtree(session_root)
-    session_root.mkdir(parents=True, exist_ok=True)
-
-    try:
-        temp_file_path = session_root / "incoming.nii.gz"
-        content_hash = _write_upload_and_hash(image_file, temp_file_path)
-        cache_dir, cached_file_path = _resolve_cache_paths(content_hash)
-        cache_hit = cached_file_path.exists() and cached_file_path.is_file()
-
-        if not cache_hit:
-            if cache_dir.exists():
-                shutil.rmtree(cache_dir)
-            cache_dir.mkdir(parents=True, exist_ok=True)
-            shutil.move(str(temp_file_path), str(cached_file_path))
-        else:
-            temp_file_path.unlink(missing_ok=True)
-
-        extra_warnings = [
-            (
-                f"Upload cache hit: reused cached NIfTI file for sha256={content_hash[:12]}."
-                if cache_hit
-                else f"Upload cache miss: stored NIfTI file for sha256={content_hash[:12]}."
-            )
-        ]
-        return _execute_dispatch(
-            db=db,
-            query=query,
-            session_id=active_session_id,
-            image_path=str(cached_file_path),
-            reviewer_enabled=reviewer_enabled,
-            requested_mode=_normalize_dispatch_mode(dispatch_mode),
-            upload_present=True,
-            extra_warnings=extra_warnings,
         )
     finally:
         await image_file.close()

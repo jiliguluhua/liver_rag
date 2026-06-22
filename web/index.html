@@ -469,21 +469,23 @@
       }
     });
 
-    async function runDispatchFlow(backendUrl, query, imagePath, reviewerEnabled, imageFile, dispatchMode) {
-      setStatus(imageFile ? "Uploading NIfTI file and submitting to backend dispatcher..." : "Submitting request to backend dispatcher...");
-      const dispatchResponse = imageFile
-        ? await dispatchUploadRequest(backendUrl, query, reviewerEnabled, imageFile, dispatchMode)
-        : await dispatchJsonRequest(backendUrl, query, imagePath, reviewerEnabled, dispatchMode);
-      renderDispatchDecision(dispatchResponse);
-      if (dispatchResponse.mode === "async") {
+    async function runReportFlow(backendUrl, query, sessionId, imagePath, reviewerEnabled) {
+      const imageFile = imageFileEl.files[0];
+      const dispatchMode = dispatchModeEl.value;
+      setStatus(imageFile ? "Uploading NIfTI file and submitting report request..." : "Submitting formal report request...");
+      const reportResponse = imageFile
+        ? await reportUploadRequest(backendUrl, query, sessionId, reviewerEnabled, imageFile, dispatchMode)
+        : await submitReport(backendUrl, query, sessionId, imagePath, reviewerEnabled, dispatchMode);
+      renderDispatchDecision(reportResponse);
+      if (reportResponse.mode === "async" && reportResponse.job) {
         liveStageState = {};
         renderStageState();
-        renderJob(dispatchResponse.job || {});
-        setStatus("Job submitted. Streaming backend job status...");
-        return streamJobUntilFinished(backendUrl, dispatchResponse.job.job_id);
+        renderJob(reportResponse.job || {});
+        setStatus("Report task submitted. Streaming backend job status...");
+        return streamJobUntilFinished(backendUrl, reportResponse.job.job_id);
       }
       jobBox.textContent = "Synchronous mode: no job created.";
-      return dispatchResponse.result || {};
+      return reportResponse.result || {};
     }
 
     async function submitCollect(backendUrl, query, sessionId, imagePath) {
@@ -517,8 +519,8 @@
       return handleResponse(response);
     }
 
-    async function submitReport(backendUrl, query, sessionId, imagePath, reviewerEnabled) {
-      const response = await fetch(`${backendUrl}/v1/report`, {
+    async function submitReport(backendUrl, query, sessionId, imagePath, reviewerEnabled, dispatchMode) {
+      const response = await fetch(`${backendUrl}/v1/report?dispatch_mode=${encodeURIComponent(dispatchMode)}`, {
         method: "POST",
         headers: requestHeaders({
           "Content-Type": "application/json",
@@ -533,44 +535,15 @@
       return handleResponse(response);
     }
 
-    async function runReportFlow(backendUrl, query, sessionId, imagePath, reviewerEnabled) {
-      setStatus("Submitting formal report request...");
-      const reportResponse = await submitReport(backendUrl, query, sessionId, imagePath, reviewerEnabled);
-      renderDispatchDecision(reportResponse);
-      if (reportResponse.mode === "async" && reportResponse.job) {
-        liveStageState = {};
-        renderStageState();
-        renderJob(reportResponse.job);
-        setStatus("Report task submitted. Streaming backend job status...");
-        return streamJobUntilFinished(backendUrl, reportResponse.job.job_id);
-      }
-      jobBox.textContent = "Synchronous mode: no job created.";
-      return reportResponse.result || {};
-    }
-
-    async function dispatchJsonRequest(backendUrl, query, imagePath, reviewerEnabled, dispatchMode) {
-      const response = await fetch(`${backendUrl}/v1/dispatch?dispatch_mode=${encodeURIComponent(dispatchMode)}`, {
-        method: "POST",
-        headers: requestHeaders({
-          "Content-Type": "application/json",
-        }),
-        body: JSON.stringify({
-          query,
-          image_path: imagePath || null,
-          reviewer_enabled: reviewerEnabled,
-        }),
-      });
-      return handleResponse(response);
-    }
-
-    async function dispatchUploadRequest(backendUrl, query, reviewerEnabled, imageFile, dispatchMode) {
+    async function reportUploadRequest(backendUrl, query, sessionId, reviewerEnabled, imageFile, dispatchMode) {
       const formData = new FormData();
       formData.append("query", query);
+      formData.append("session_id", sessionId || "");
       formData.append("reviewer_enabled", String(reviewerEnabled));
       formData.append("dispatch_mode", dispatchMode);
       formData.append("image_file", imageFile);
 
-      const response = await fetch(`${backendUrl}/v1/dispatch/upload`, {
+      const response = await fetch(`${backendUrl}/v1/report/upload`, {
         method: "POST",
         headers: requestHeaders(),
         body: formData,

@@ -4,3 +4,6 @@ server:
 spring:
   application:
     name: knowledge-service
+
+knowledge:
+  sqlite-path: ../data/liver_rag_api.db
